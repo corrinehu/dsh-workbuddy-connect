@@ -2,7 +2,7 @@
 
 export const en = {
   title: 'DSH WorkBuddy Connect',
-  intro: "Use the WorkBuddy desktop app's subscribed models directly in DSH — zero configuration, ready out of the box.",
+  intro: 'Use the models in the WorkBuddy desktop app directly in DSH — zero configuration, ready out of the box.',
   expand: 'Expand',
   collapse: 'Collapse',
   loading: 'Loading account…',
@@ -26,7 +26,7 @@ export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
   title: 'DSH WorkBuddy Connect',
-  intro: '在 DSH 中直接使用 WorkBuddy 桌面 App 已订阅的模型，开箱即用，无需额外配置。',
+  intro: '在 DSH 中直接使用 WorkBuddy 桌面 App 包含的模型，开箱即用，无需额外配置。',
   expand: '展开',
   collapse: '收起',
   loading: '正在读取账号…',
