@@ -1,0 +1,6 @@
+# Register the WorkBuddy provider without changing the profile's current
+# default model. The plugin reuses the WorkBuddy desktop app's sign-in; no
+# separate OAuth flow is started.
+- insert:
+    - id: llm-workbuddy
+      name: dsh-workbuddy-connect
