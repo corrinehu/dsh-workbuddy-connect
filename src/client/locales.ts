@@ -2,7 +2,7 @@
 
 export const en = {
   title: 'WorkBuddy Connect',
-  intro: 'WorkBuddy (CodeBuddy) subscription models, following the desktop app sign-in.',
+  intro: 'Use the WorkBuddy desktop app models in DSH; they follow the app state automatically. No API key needed.',
   expand: 'Expand',
   collapse: 'Collapse',
   loading: 'Loading account…',
@@ -26,7 +26,7 @@ export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
   title: 'WorkBuddy Connect',
-  intro: '使用 WorkBuddy（CodeBuddy）订阅的模型，自动跟随桌面 App 的登录。',
+  intro: '在 DSH 调用 WorkBuddy 桌面 App 中的模型，自动跟随 App 状态，无需 API Key。',
   expand: '展开',
   collapse: '收起',
   loading: '正在读取账号…',
