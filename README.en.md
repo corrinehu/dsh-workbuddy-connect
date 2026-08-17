@@ -61,6 +61,7 @@ dsh plugin --profile <name> exec dsh-workbuddy-connect logout          # remove 
 
 ## Known limitations
 
+- Currently tested on macOS with the DSH Web profile only. The default desktop-credential paths on Windows / Linux are unverified; if the file is not found, point `authFile` or the `WORKBUDDY_AUTH_FILE` environment variable at the actual path (`doctor` diagnoses it).
 - Models are declared text-only (the upstream discloses no modality information; under-claiming beats a mid-turn failure). `glm-5v-turbo` vision input is not carried through.
 - The upstream protocol is reverse-engineered (wire-compatible with [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api), MIT) and may break as WorkBuddy iterates.
 - The loopback shim listens on `127.0.0.1` only.

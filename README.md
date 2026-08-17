@@ -61,6 +61,7 @@ dsh plugin --profile <name> exec dsh-workbuddy-connect logout          # 删除�
 
 ## 已知边界
 
+- 当前仅在 macOS 与 DSH Web profile 测试通过；Windows / Linux 的桌面凭据默认路径未经验证，找不到文件时用 `authFile` 或环境变量 `WORKBUDDY_AUTH_FILE` 指定实际路径（`doctor` 可诊断）。
 - 模型按 text-only 申报（上游接口不返回模态信息，宁可少报不让请求挂中途）；`glm-5v-turbo` 的视觉能力暂不透传图片。
 - 上游接口为逆向所得（协议与 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)（MIT）一致），随上游变化可能失效；WorkBuddy 处于快速迭代期。
 - 回环 shim 只监听 `127.0.0.1`，不对外。
