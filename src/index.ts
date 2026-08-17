@@ -14,6 +14,7 @@ import { WorkBuddyCatalog } from './catalog.ts'
 import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
+import { registerWorkBuddyStatusRoute } from './web-status.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -77,6 +78,10 @@ export function apply(ctx: Context, config: Config): void {
   })
   const catalog = new WorkBuddyCatalog()
   const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+
+  // Same-origin status route backing the Plugin-configuration card; the
+  // webServer service is optional (a headless profile serves no browser).
+  ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store, client }))
 
   // The settings section is what makes the provider visible on the Models
   // settings page (settings.describe joins the provider directory), and it

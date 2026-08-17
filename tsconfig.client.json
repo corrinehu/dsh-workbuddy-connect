@@ -8,12 +8,12 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2024",
-    "lib": ["es2024"],
+    "lib": ["es2024", "dom"],
+    "jsx": "react-jsx",
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "tests"],
-  "exclude": ["src/client"]
+  "include": ["src/client"]
 }

@@ -46,6 +46,11 @@ dsh plugin --profile <name> exec dsh-workbuddy-connect doctor --json   # 无密�
 dsh plugin --profile <name> exec dsh-workbuddy-connect logout          # 删除插件自己的凭据副本
 ```
 
+## 设置界面
+
+- **设置 → 模型**：WorkBuddy 以 provider 卡片出现（可在此改 `authFile`，改动即时生效）。
+- **设置 → 插件 → 插件配置**：可展开的「WorkBuddy Connect」卡片，展示当前登录账号、访问令牌过期时间和各套餐剩余积分（每 60 秒自动刷新，也可手动刷新）。数据来自插件的回环状态接口 `/plugins/dsh-workbuddy-connect/status`，只接受本机浏览器来源，响应不含任何 token。
+
 ## 凭据与刷新策略
 
 - 桌面 App 的凭据文件**只读，永不写入**。
