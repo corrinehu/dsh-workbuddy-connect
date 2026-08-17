@@ -1,71 +1,35 @@
-# WorkBuddy Connect
+# dsh-workbuddy-connect
 
 Call the models in your WorkBuddy desktop app from [DSH](https://github.com/deepseek-ai/deepseek-harness); they follow the app state automatically. No API key needed.
 
 English | [中文](./README.md)
 
-## What it does
+## Features
 
-- Registers the `workbuddy` model provider: the model picker gains a **WorkBuddy** group listing the CLI models available to your account (`auto`, `deepseek-v4-pro`, `glm-5.2`, `kimi-k3-1`, `minimax-m3`, …).
-- **Reuses the WorkBuddy desktop app's sign-in**: the plugin reads the desktop app's credential file read-only; there is no separate OAuth flow inside DSH and no API key.
-- A loopback endpoint bound to `127.0.0.1` only translates OpenAI-compatible requests into the WorkBuddy upstream's quirks (forced streaming, `tool_choice` object-to-string, CLI-shaped headers). The model catalog refreshes from the upstream at startup.
-- Streaming, tool calls, compaction, and permission gates remain Harness-owned; this plugin only supplies the model route.
-
-```
-DSH (pi-ai adapter) ──OpenAI format──▶ 127.0.0.1 loopback shim ──translate──▶ copilot.tencent.com /v2/chat/completions
-                                          │
-                                          ├─ Credentials: reads the WorkBuddy desktop app's file (read-only), refreshes automatically before expiry
-                                          └─ Models: GET /console/enterprises/personal/models (cli group)
-```
+- **Models out of the box**: every model available to your WorkBuddy account (DeepSeek-V4-Pro, GLM-5.2, Kimi-K3, MiniMax-M3, the Auto router, …) appears in the DSH model picker under the WorkBuddy group, synced with your account entitlements.
+- **No API key, no sign-in setup**: the plugin reuses the WorkBuddy desktop app's signed-in state, renews tokens automatically, and follows account switches in the app instantly.
+- **A native DSH experience**: streaming, tool calls, compaction, and approvals all come from DSH — the plugin only supplies the model route; remaining credit is visible anytime in the settings card.
 
 ## Install
 
-Prerequisite: the WorkBuddy desktop app is installed and signed in at least once (on macOS the credential lives at `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info`).
+Prerequisite: the WorkBuddy desktop app is installed and signed in at least once.
 
 ```sh
-dsh plugin --profile <name> add link:/path/to/dsh-workbuddy-connect
-dsh --profile <name> --dump-config     # should show the llm-workbuddy layer
-dsh web                                # model picker → WorkBuddy group
+dsh plugin --profile <name> add github:corrinehu/dsh-workbuddy-connect
+dsh web
 ```
 
-## Configuration
+## Usage
 
-The `cordis.patch.yml` layer needs zero configuration. Optional field:
-
-```yaml
-- id: llm-workbuddy
-  config:
-    authFile: /path/to/workbuddy-desktop.info   # override the desktop credential path (or set WORKBUDDY_AUTH_FILE)
-```
-
-## CLI
-
-```sh
-dsh plugin --profile <name> exec dsh-workbuddy-connect status --json   # sign-in state + remaining credit
-dsh plugin --profile <name> exec dsh-workbuddy-connect doctor --json   # secret-free diagnostics
-dsh plugin --profile <name> exec dsh-workbuddy-connect logout          # remove the plugin-owned credential copy
-```
-
-## Settings UI
-
-- **Settings → Models**: WorkBuddy appears as a provider card (edit `authFile` here; changes apply live).
-- **Settings → Plugins → Plugin configuration**: the expandable "WorkBuddy Connect" card shows the current account, access-token expiry, and per-package remaining credit (auto-refresh every 60 s while expanded, manual refresh available). Data comes from the plugin's loopback status route `/plugins/dsh-workbuddy-connect/status`, which answers same-machine browsers only and never returns token material.
-
-## Credentials and refresh policy
-
-- The desktop app's credential file is **read-only; never written**.
-- Five minutes before the access token expires, the plugin calls the official refresh endpoint and stores the result in its own copy at `$DSH_HOME/.workbuddy-auth.json` (mode 0600, atomic writes).
-- The effective credential is whichever of the two sources expires later, so a refresh by either side takes effect immediately; switching accounts in the desktop app is followed automatically.
-- Note: the refresh token is shared with the desktop app. In the rare case both sides refresh at the same instant, one side may be invalidated; signing in once more in the WorkBuddy app restores it.
-- Upstream failures are classified: insufficient credit (HTTP 402), rate limit (429), dead session (401 + 12153 → sign in again in the app).
+- After installing, pick a model from the WorkBuddy group in the chat model picker and start talking.
+- **Settings → Plugins → Plugin configuration**: expand the "WorkBuddy Connect" card to see the current account, token validity, and per-package remaining credit, with a manual refresh button.
+- CLI: `dsh plugin --profile <name> exec dsh-workbuddy-connect status` reports sign-in state and remaining credit (add `--json` for machine-readable output; `doctor` and `logout` are also available).
 
 ## Known limitations
 
-- Currently tested on macOS with the DSH Web profile only. The default desktop-credential paths on Windows / Linux are unverified; if the file is not found, point `authFile` or the `WORKBUDDY_AUTH_FILE` environment variable at the actual path (`doctor` diagnoses it).
-- Models are declared text-only (the upstream discloses no modality information; under-claiming beats a mid-turn failure). `glm-5v-turbo` vision input is not carried through.
-- The upstream protocol is reverse-engineered (wire-compatible with [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api), MIT) and may break as WorkBuddy iterates.
-- The loopback shim listens on `127.0.0.1` only.
-- Verified combination: DSH plugin API `0.1.0-rc.6`, `@earendil-works/pi-ai` `0.82.1`, Node `^22.19.0 || >=24`.
+- Tested on macOS with the DSH Web profile only; the default credential paths on Windows / Linux are unverified — point the `WORKBUDDY_AUTH_FILE` environment variable at the actual location if needed.
+- Sending images to models is not supported yet.
+- Relies on WorkBuddy client interfaces (not a public API), so the plugin may need updates as WorkBuddy changes. Verified on DSH `0.1.0-rc.6`, Node 22+.
 
 ## Development
 
@@ -73,8 +37,6 @@ dsh plugin --profile <name> exec dsh-workbuddy-connect logout          # remove 
 pnpm install
 pnpm run check        # typecheck + vitest + build
 ```
-
-The test suite is fully offline (no real credentials, no upstream calls).
 
 ## Disclaimer
 
