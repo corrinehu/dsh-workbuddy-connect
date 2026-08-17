@@ -28,7 +28,6 @@ dsh web
 ## Known limitations
 
 - Tested on macOS with the DSH Web profile only; the default credential paths on Windows / Linux are unverified — point the `WORKBUDDY_AUTH_FILE` environment variable at the actual location if needed.
-- Sending images to models is not supported yet.
 - Relies on WorkBuddy client interfaces (not a public API), so the plugin may need updates as WorkBuddy changes. Verified on DSH `0.1.0-rc.6`, Node 22+.
 
 ## Development

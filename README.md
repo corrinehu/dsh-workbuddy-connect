@@ -28,7 +28,6 @@ dsh web
 ## 已知边界
 
 - 当前仅在 macOS 与 DSH Web profile 下测试通过；Windows / Linux 的凭据默认路径未经验证，必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
-- 暂不支持向模型发送图片。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整；验证环境为 DSH `0.1.0-rc.6`、Node 22+。
 
 ## 开发
