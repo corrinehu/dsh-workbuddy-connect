@@ -26,7 +26,7 @@ export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
   title: 'WorkBuddy Connect',
-  intro: '在 DSH 调用 WorkBuddy 桌面 App 中的模型，自动跟随 App 状态，无需 API Key。',
+  intro: '在 DSH 中调用 WorkBuddy 桌面 App 中的模型，自动跟随 App 状态，无需 API Key。',
   expand: '展开',
   collapse: '收起',
   loading: '正在读取账号…',
