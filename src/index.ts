@@ -7,7 +7,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { WorkBuddyCatalog } from './catalog.ts'
@@ -60,7 +60,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  authFile: z.string(),
+  authFile: z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)'),
 })
 
 /**
@@ -77,6 +77,18 @@ export function apply(ctx: Context, config: Config): void {
   })
   const catalog = new WorkBuddyCatalog()
   const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+
+  // The settings section is what makes the provider visible on the Models
+  // settings page (settings.describe joins the provider directory), and it
+  // keeps the configured auth-file path live across edits.
+  let current = () => config
+  installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+    setSource(source) { current = source },
+    onChange() {
+      const next = current().authFile
+      store.setDesktopPath(next)
+    },
+  })
 
   let stopped = false
   ctx.effect(() => () => {

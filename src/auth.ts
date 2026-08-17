@@ -180,23 +180,37 @@ export class WorkBuddyCredentialStore {
   private readonly refresh: WorkBuddyStoreOptions['refresh']
   private readonly refreshMarginMs: number
   private readonly ownPath: string
-  private readonly desktopPath: string | undefined
+  private desktopPathOverride: string | undefined
   private inflight: Promise<WorkBuddyCredential> | undefined
 
   constructor(options: WorkBuddyStoreOptions) {
     this.refresh = options.refresh
     this.refreshMarginMs = options.refreshMarginMs ?? 5 * 60 * 1000
     this.ownPath = options.ownPath ?? workbuddyOwnAuthPath()
-    this.desktopPath = options.desktopPath
-      ?? (process.env[WORKBUDDY_AUTH_FILE_ENV]?.trim() !== '' && process.env[WORKBUDDY_AUTH_FILE_ENV] !== undefined
-        ? process.env[WORKBUDDY_AUTH_FILE_ENV]
-        : undefined)
+    this.desktopPathOverride = options.desktopPath
+  }
+
+  /**
+   * Configuration precedence for the desktop file: the plugin's configured
+   * path, then the environment variable, then the platform default.
+   */
+  private resolveDesktopPath(): string | undefined {
+    const fromEnv = process.env[WORKBUDDY_AUTH_FILE_ENV]
+    return this.desktopPathOverride
+      ?? (fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv : undefined)
       ?? defaultDesktopAuthPath()
+  }
+
+  /**
+   * Repoint the desktop file; a settings change applies on the next read.
+   */
+  setDesktopPath(path: string | undefined): void {
+    this.desktopPathOverride = path
   }
 
   /** The resolved desktop auth-file path, for diagnostics. */
   desktopAuthPath(): string | undefined {
-    return this.desktopPath
+    return this.resolveDesktopPath()
   }
 
   /** The plugin-owned copy path, for diagnostics. */
@@ -219,7 +233,7 @@ export class WorkBuddyCredentialStore {
   async resolve(): Promise<WorkBuddyCredential> {
     const credential = await this.current()
     if (credential === undefined) {
-      const desktop = this.desktopPath ?? '(no desktop path on this platform)'
+      const desktop = this.resolveDesktopPath() ?? '(no desktop path on this platform)'
       throw new Error(
         `workbuddy: no signed-in WorkBuddy account found; sign in once in the WorkBuddy desktop app`
         + ` (expected ${desktop} or WORKBUDDY_AUTH_FILE), or refresh an existing session`,
@@ -300,9 +314,10 @@ export class WorkBuddyCredentialStore {
   }
 
   private async readDesktop(): Promise<WorkBuddyCredential | undefined> {
-    if (this.desktopPath === undefined) return undefined
+    const desktopPath = this.resolveDesktopPath()
+    if (desktopPath === undefined) return undefined
     try {
-      return parseWorkBuddyAuth(await readFile(this.desktopPath, 'utf8'))
+      return parseWorkBuddyAuth(await readFile(desktopPath, 'utf8'))
     } catch (error: unknown) {
       if (isENOENT(error)) return undefined
       throw error
@@ -320,9 +335,10 @@ export class WorkBuddyCredentialStore {
 
   /** Whether the desktop file exists and is a regular file; diagnostics only. */
   async desktopFilePresent(): Promise<boolean> {
-    if (this.desktopPath === undefined) return false
+    const desktopPath = this.resolveDesktopPath()
+    if (desktopPath === undefined) return false
     try {
-      return (await stat(this.desktopPath)).isFile()
+      return (await stat(desktopPath)).isFile()
     } catch {
       return false
     }

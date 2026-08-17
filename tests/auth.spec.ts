@@ -131,4 +131,25 @@ describe('WorkBuddyCredentialStore', () => {
     })
     await expect(store.resolve()).rejects.toThrow(/no signed-in WorkBuddy account/)
   })
+
+  it('applies a desktop-path repoint on the next read', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-store-'))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    const first = join(dir, 'workbuddy-a.info')
+    const second = join(dir, 'workbuddy-b.info')
+    await writeFile(first, nestedDoc(Date.now() + 3600_000))
+    await writeFile(second, JSON.stringify({
+      auth: { accessToken: 'at-b', refreshToken: 'rt', expiresAt: Date.now() + 7200_000, domain: '' },
+      account: { uid: 'uid-b', nickname: 'B' },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      desktopPath: first,
+      ownPath: join(dir, 'own.json'),
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at' })
+    store.setDesktopPath(second)
+    expect(store.desktopAuthPath()).toBe(second)
+    await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-b', nickname: 'B' })
+  })
 })
