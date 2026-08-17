@@ -7,6 +7,7 @@ import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
+import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
 
 type Action = 'doctor' | 'logout' | 'status'
 
@@ -25,7 +26,7 @@ function printHelp(): void {
     'Usage: dsh-workbuddy-connect <doctor|status|logout> [--json]',
     '',
     '  doctor   secret-free sign-in and environment diagnostics',
-    '  status   sign-in state and remaining WorkBuddy credit',
+    '  status   sign-in state, remaining WorkBuddy credit, and host-bundle health',
     '  logout   remove the plugin-owned credential copy (the desktop app keeps its sign-in)',
     '  --json   emit one secret-free JSON document (doctor/status only)',
     '',
@@ -45,6 +46,8 @@ async function doctor(jsonOutput: boolean): Promise<number> {
   const store = makeStore()
   const status = await store.status()
   const desktopPresent = await store.desktopFilePresent()
+  const heartbeat = await readHostHeartbeat()
+  const hostAlive = heartbeat !== undefined && isHeartbeatProcessAlive(heartbeat)
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
     package: 'dsh-workbuddy-connect',
@@ -55,11 +58,18 @@ async function doctor(jsonOutput: boolean): Promise<number> {
       present: desktopPresent,
     },
     ownAuthFile: workbuddyOwnAuthPath(),
+    hostHeartbeat: {
+      path: workbuddyHostHeartbeatPath(),
+      present: heartbeat !== undefined,
+      ...heartbeat === undefined ? {} : { registeredAt: heartbeat.registeredAt, pid: heartbeat.pid },
+      processAlive: hostAlive,
+    },
     signIn: status.state,
     fallbackModels: FALLBACK_WORKBUDDY_MODELS.length,
     hints: [
       ...status.state === 'signed-in' ? [] : ['Sign in once in the WorkBuddy desktop app, then run status again.'],
       ...desktopPresent ? [] : [`No WorkBuddy desktop auth file at the expected path; set WORKBUDDY_AUTH_FILE if it lives elsewhere.`],
+      ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and provider are unavailable until DSH starts the plugin.'],
     ],
   }
   if (jsonOutput) {
@@ -68,6 +78,7 @@ async function doctor(jsonOutput: boolean): Promise<number> {
     process.stdout.write([
       `WorkBuddy Connect ${WORKBUDDY_CONNECT_VERSION} on ${process.version}`,
       `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
+      `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       `Sign-in state: ${report.signIn}`,
       `Static fallback models: ${report.fallbackModels}`,
       ...report.hints.map(hint => `Hint: ${hint}`),
@@ -81,11 +92,14 @@ async function status(jsonOutput: boolean): Promise<number> {
   const store = makeStore()
   const client = new WorkBuddyUpstreamClient()
   const authStatus = await store.status()
+  const heartbeat = await readHostHeartbeat()
+  const hostAlive = heartbeat !== undefined && isHeartbeatProcessAlive(heartbeat)
+  const hostState = hostAlive ? 'running' : heartbeat !== undefined ? 'stale' : 'not-started'
   if (authStatus.state !== 'signed-in') {
     if (jsonOutput) {
-      printJson({ schemaVersion: JSON_SCHEMA_VERSION, package: 'dsh-workbuddy-connect', version: WORKBUDDY_CONNECT_VERSION, status: 'signed-out' })
+      printJson({ schemaVersion: JSON_SCHEMA_VERSION, package: 'dsh-workbuddy-connect', version: WORKBUDDY_CONNECT_VERSION, status: 'signed-out', hostBundle: hostState })
     } else {
-      process.stdout.write('WorkBuddy Connect: signed out\n')
+      process.stdout.write(`WorkBuddy Connect: signed out\nHost bundle: ${hostState}\n`)
     }
     return 1
   }
@@ -109,6 +123,7 @@ async function status(jsonOutput: boolean): Promise<number> {
       source: authStatus.source,
       credits: credits?.total,
       ...credits?.error === undefined ? {} : { creditsError: credits.error },
+      hostBundle: hostState,
     })
     return 0
   }
@@ -118,6 +133,8 @@ async function status(jsonOutput: boolean): Promise<number> {
     credits?.error === undefined
       ? `Remaining credit: ${credits?.total ?? 'unknown'}`
       : `Remaining credit: unavailable (${credits.error})`,
+    `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : hostState === 'stale' ? 'stale heartbeat (DSH process exited)' : 'not started in this profile'}`,
+    'Client card: load failures are logged to the browser console only; the host provider is unaffected.',
     '',
   ].join('\n'))
   return 0

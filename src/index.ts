@@ -15,6 +15,7 @@ import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
+import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -44,6 +45,14 @@ export {
   type WorkBuddyRefreshOutcome,
   type WorkBuddyUpstreamModel,
 } from './upstream.ts'
+export {
+  WORKBUDDY_HOST_HEARTBEAT_FILENAME,
+  clearHostHeartbeat,
+  isHeartbeatProcessAlive,
+  readHostHeartbeat,
+  workbuddyHostHeartbeatPath,
+  type WorkBuddyHostHeartbeat,
+} from './host-heartbeat.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'llm-workbuddy'
@@ -99,6 +108,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => {
     stopped = true
     void shim.close()
+    void clearHostHeartbeat()
   })
 
   void shim.ready
@@ -146,6 +156,11 @@ export function apply(ctx: Context, config: Config): void {
           releaseAdapter?.()
           releaseDirectory?.()
         }
+
+        // The host bundle is live: write a heartbeat so the status CLI can
+        // report host health without a browser. Cleared on disposal; a stale
+        // heartbeat after a crash is detected by PID in the reader.
+        void writeHostHeartbeat()
       } catch (error: unknown) {
         ctx.logger.error('dsh-workbuddy-connect: provider registration failed', error)
         return
