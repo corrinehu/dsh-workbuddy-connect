@@ -33,6 +33,15 @@ dsh plugin --profile <name> add github:corrinehu/dsh-workbuddy-connect
 dsh web
 ```
 
+> 从 GitHub 安装会在本地构建（插件自带 `prepare` 脚本）。首次 `add` 若被 pnpm 拦截（Ignored build scripts），在 profile 目录（`~/.dsh/profiles/<name>`）的 `pnpm-workspace.yaml` 中加入：
+>
+> ```yaml
+> allowBuilds:
+>   dsh-workbuddy-connect: true
+> ```
+>
+> 然后重新执行 `add`。
+
 ## 命令行
 
 `dsh plugin --profile <name> exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。

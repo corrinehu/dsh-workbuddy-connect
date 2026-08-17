@@ -27,6 +27,15 @@ dsh plugin --profile <name> add github:corrinehu/dsh-workbuddy-connect
 dsh web
 ```
 
+> Installing from GitHub builds locally (the package ships a `prepare` script). If the first `add` is refused by pnpm ("Ignored build scripts"), add this to the `pnpm-workspace.yaml` of the profile directory (`~/.dsh/profiles/<name>`):
+>
+> ```yaml
+> allowBuilds:
+>   dsh-workbuddy-connect: true
+> ```
+>
+> then run the `add` again.
+
 ## CLI
 
 `dsh plugin --profile <name> exec dsh-workbuddy-connect status`: sign-in state and remaining credit (`--json` for machine-readable output; `doctor` for diagnostics and `logout` for credential cleanup are also available).
