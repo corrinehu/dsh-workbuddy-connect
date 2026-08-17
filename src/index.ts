@@ -15,7 +15,8 @@ import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 
-export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS } from './adapter.ts'
+export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
+export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 export {
   FALLBACK_WORKBUDDY_MODELS,
   WorkBuddyCatalog,
@@ -76,12 +77,6 @@ export function apply(ctx: Context, config: Config): void {
   })
   const catalog = new WorkBuddyCatalog()
   const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
-  const { adapter, invalidate } = createWorkBuddyAdapter({
-    shim,
-    store,
-    catalog,
-    resolveAttachments: () => ctx.get('attachments'),
-  })
 
   let stopped = false
   ctx.effect(() => () => {
@@ -92,31 +87,51 @@ export function apply(ctx: Context, config: Config): void {
   void shim.ready
     .then(() => {
       if (stopped) return
-      let releaseAdapter: (() => void) | undefined
-      let releaseDirectory: (() => void) | undefined
+
+      let invalidate: (() => void) | undefined
       try {
-        releaseAdapter = ctx.llm.registerAdapter([WORKBUDDY_PROVIDER], adapter)
-        releaseDirectory = ctx.llm.registerConfigurableProviders([{
-          provider: WORKBUDDY_PROVIDER,
-          displayName: 'WorkBuddy',
-          settingsNs: WORKBUDDY_SETTINGS_NS,
-          settingsPath: [],
-          declared: false,
-        }])
+        // Constructed only once the listener holds a port: the provider's
+        // models read the shim origin at construction time.
+        const workbuddy = createWorkBuddyAdapter({
+          shim,
+          store,
+          catalog,
+          resolveAttachments: () => ctx.get('attachments'),
+        })
+        invalidate = workbuddy.invalidate
+
+        let releaseAdapter: (() => void) | undefined
+        let releaseDirectory: (() => void) | undefined
+        try {
+          releaseAdapter = ctx.llm.registerAdapter([WORKBUDDY_PROVIDER], workbuddy.adapter)
+          releaseDirectory = ctx.llm.registerConfigurableProviders([{
+            provider: WORKBUDDY_PROVIDER,
+            displayName: 'WorkBuddy',
+            settingsNs: WORKBUDDY_SETTINGS_NS,
+            settingsPath: [],
+            declared: false,
+          }])
+        } finally {
+          if (releaseAdapter === undefined || releaseDirectory === undefined) {
+            // Registration threw; release whichever half landed.
+            releaseAdapter?.()
+            releaseDirectory?.()
+          }
+        }
+        try {
+          ctx.effect(() => () => {
+            releaseAdapter?.()
+            releaseDirectory?.()
+          })
+        } catch {
+          // The plugin was disposed during registration; release immediately —
+          // the plugin-level disposer already closed the shim.
+          releaseAdapter?.()
+          releaseDirectory?.()
+        }
       } catch (error: unknown) {
         ctx.logger.error('dsh-workbuddy-connect: provider registration failed', error)
         return
-      }
-      try {
-        ctx.effect(() => () => {
-          releaseAdapter?.()
-          releaseDirectory?.()
-        })
-      } catch {
-        // The plugin was disposed during registration; release immediately —
-        // the plugin-level disposer already closed the shim.
-        releaseAdapter()
-        releaseDirectory()
       }
 
       void (async () => {
@@ -126,7 +141,7 @@ export function apply(ctx: Context, config: Config): void {
           const models = await client.fetchModels(credential)
           if (stopped) return
           catalog.set([...models])
-          invalidate()
+          invalidate?.()
         } catch (error: unknown) {
           ctx.logger.warn(
             'dsh-workbuddy-connect: dynamic model catalog unavailable; serving the static fallback list',
