@@ -1,14 +1,14 @@
 {
   "name": "dsh-workbuddy-connect",
-  "displayName": "WorkBuddy Connect",
-  "description": "Use WorkBuddy (CodeBuddy) subscription models in DeepSeek Harness, reusing the desktop app's sign-in.",
+  "displayName": "DSH WorkBuddy Connect",
+  "description": "在 DSH 中零配置调用 WorkBuddy 订阅模型：模型直达选择器、积分在设置页可见、登录状态随桌面 App 自动跟随。",
   "version": "0.1.0",
   "author": "corrinehu",
   "keywords": [
     "dsh-plugin",
-    "deepseek-harness",
     "workbuddy",
-    "codebuddy"
+    "model-provider",
+    "deepseek-harness"
   ],
   "type": "module",
   "engines": {

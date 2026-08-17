@@ -1,8 +1,8 @@
 /** Plugin-card copy registered under the settings.workbuddy locale namespace. */
 
 export const en = {
-  title: 'WorkBuddy Connect',
-  intro: 'Use the WorkBuddy desktop app models in DSH; they follow the app state automatically. No API key needed.',
+  title: 'DSH WorkBuddy Connect',
+  intro: "Use the WorkBuddy desktop app's subscribed models directly in DSH — zero configuration, ready out of the box.",
   expand: 'Expand',
   collapse: 'Collapse',
   loading: 'Loading account…',
@@ -25,8 +25,8 @@ export const en = {
 export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
-  title: 'WorkBuddy Connect',
-  intro: '在 DSH 中调用 WorkBuddy 桌面 App 中的模型，自动跟随 App 状态，无需 API Key。',
+  title: 'DSH WorkBuddy Connect',
+  intro: '在 DSH 中直接使用 WorkBuddy 桌面 App 已订阅的模型，开箱即用，无需额外配置。',
   expand: '展开',
   collapse: '收起',
   loading: '正在读取账号…',
