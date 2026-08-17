@@ -1,6 +1,6 @@
 # WorkBuddy Connect
 
-Use your WorkBuddy (Tencent CodeBuddy) subscription models directly inside [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness).
+Call the models in your WorkBuddy desktop app from [DSH](https://github.com/deepseek-ai/deepseek-harness); they follow the app state automatically. No API key needed.
 
 English | [中文](./README.md)
 

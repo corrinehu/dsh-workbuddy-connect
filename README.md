@@ -1,6 +1,6 @@
 # WorkBuddy Connect
 
-在 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 里直接使用 WorkBuddy（腾讯 CodeBuddy）订阅的模型额度。
+在 [DSH](https://github.com/deepseek-ai/deepseek-harness) 中调用 WorkBuddy 桌面 App 中的模型，自动跟随 App 状态，无需 API Key。
 
 [English](./README.en.md) | 中文
 
