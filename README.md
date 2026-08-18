@@ -4,7 +4,7 @@
 [English](./README.en.md) | 中文
 
 
-将 WorkBuddy 桌面 App 中包含的各种模型（DeepSeek-V4-Pro、DeepSeek-V4-Flash、GLM-5.2、Kimi-K3、MiniMax-M3 、Hy3等）自动接入 DeepSeek Harness，实现在 DSH 对话窗口里零配置使用。
+将 WorkBuddy 桌面 App 中包含的各种模型（GLM-5.3、GLM-5.2、DeepSeek-V4-Pro、DeepSeek-V4-Flash、Kimi-K3、MiniMax-M3 、Hy3等）自动接入 DeepSeek Harness，实现在 DSH 对话窗口里零配置使用。
 
 
 ## 功能

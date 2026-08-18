@@ -2,7 +2,7 @@
 
 English | [中文](./README.md)
 
-Brings every model in the WorkBuddy desktop app (DeepSeek-V4-Pro, DeepSeek-V4-Flash, GLM-5.2, Kimi-K3, MiniMax-M3, Hy3, and more) straight into [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — zero configuration in the DSH chat.
+Brings every model in the WorkBuddy desktop app (GLM-5.3, GLM-5.2, DeepSeek-V4-Pro, DeepSeek-V4-Flash, Kimi-K3, MiniMax-M3, Hy3, and more) straight into [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — zero configuration in the DSH chat.
 
 ## Features
 
