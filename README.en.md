@@ -23,13 +23,13 @@ Expand the card to see the account, token validity, and remaining credit.
 Prerequisite: the WorkBuddy desktop app is installed and signed in (the plugin reuses the app's sign-in state and follows account switches automatically).
 
 ```sh
-dsh plugin --profile <name> add github:corrinehu/dsh-workbuddy-connect
+dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
 dsh web
 ```
 
 ## CLI
 
-`dsh plugin --profile <name> exec dsh-workbuddy-connect status`: sign-in state and remaining credit (`--json` for machine-readable output; `doctor` for diagnostics and `logout` for credential cleanup are also available).
+`dsh plugin --profile web exec dsh-workbuddy-connect status`: sign-in state and remaining credit (`--json` for machine-readable output; `doctor` for diagnostics and `logout` for credential cleanup are also available).
 
 ## Known limitations
 

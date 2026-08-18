@@ -29,13 +29,13 @@
 前置：已安装并登录 WorkBuddy 桌面 App（插件复用 App 的登录状态，账号切换自动跟随）。
 
 ```sh
-dsh plugin --profile <name> add github:corrinehu/dsh-workbuddy-connect
+dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
 dsh web
 ```
 
 ## 命令行
 
-`dsh plugin --profile <name> exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。
+`dsh plugin --profile web exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。
 
 ## 已知限制
 
