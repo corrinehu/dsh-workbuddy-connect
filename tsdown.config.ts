@@ -1,6 +1,15 @@
+import { readFileSync } from 'node:fs'
 import type { UserConfig } from 'tsdown'
 
 const PLUGIN_ID = 'dsh-workbuddy-connect'
+
+/** Read the npm version once so the build injects it into src/version.ts. */
+const PACKAGE_VERSION = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+).version as string
+
+/** Build-time define map; `src/version.ts` reads `__DSH_WORKBUDDY_VERSION__`. */
+const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION) }
 
 const CLIENT_EXTERNALS = [
   'react',
@@ -24,6 +33,7 @@ export default [
     fixedExtension: false,
     dts: true,
     clean: true,
+    define: VERSION_DEFINE,
     deps: {
       neverBundle: [
         '@earendil-works/pi-ai',
@@ -46,6 +56,7 @@ export default [
     platform: 'browser',
     dts: false,
     clean: false,
+    define: VERSION_DEFINE,
     deps: { neverBundle: [...CLIENT_EXTERNALS] },
     outputOptions: {
       entryFileNames: 'client.js',

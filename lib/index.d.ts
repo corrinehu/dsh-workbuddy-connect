@@ -270,10 +270,34 @@ declare function clearHostHeartbeat(): Promise<void>;
 /** Read and validate the heartbeat; returns `undefined` when absent or malformed. */
 declare function readHostHeartbeat(): Promise<WorkBuddyHostHeartbeat | undefined>;
 /**
- * Whether the heartbeat's PID is still alive. A stale heartbeat (process
- * crashed without clearing the file) is distinguished from a live host by
- * checking `process.kill(pid, 0)` — signal 0 tests existence without
- * sending a signal.
+ * Absolute start time (epoch ms) of the process holding `pid`, or `undefined`
+ * when it cannot be determined (no such PID, platform lacks a readable source).
+ *
+ * - macOS / Linux: `ps -o lstart=` prints a local-time "EEE MMM DD HH:MM:SS YYYY";
+ *   `Date.parse` resolves it against the local clock, which matches how
+ *   `registeredAt` (a `Date.now()` absolute value) is expressed.
+ * - Windows: WMI `CreationDate` is UTC (`YYYYMMDDHHMMSS.mmm+zzzz`); parsed with
+ *   `Date.UTC`, again comparable to `registeredAt`.
+ *
+ * Failures return `undefined` so callers can fall back to plain PID liveness
+ * rather than mis-report a running host as dead.
+ */
+declare function processStartTimeMs(pid: number): number | undefined;
+/**
+ * Whether the heartbeat's PID is still alive *and* still the same process that
+ * registered it. A stale heartbeat (host crashed without clearing the file)
+ * is distinguished from a live host by two checks:
+ *
+ * 1. `process.kill(pid, 0)` — the PID exists (signal 0 tests existence).
+ * 2. The process holding that PID started at or before `registeredAt`. A host
+ *    that registered the heartbeat must have been started before writing it,
+ *    so `start <= registeredAt`; a recycled PID belongs to an unrelated process
+ *    started after the host died, so `start > registeredAt` correctly reads dead.
+ *
+ * PID-only detection is not enough: after a crash the OS may hand the same PID
+ * to an unrelated process, and the un-cleared stale heartbeat would otherwise
+ * produce a false "Host running". When the process start time cannot be read
+ * (e.g. unsupported platform) the check degrades to plain PID liveness.
  */
 declare function isHeartbeatProcessAlive(heartbeat: WorkBuddyHostHeartbeat): boolean;
 //#endregion
@@ -298,4 +322,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyHostHeartbeat, type WorkBuddyModelInfo, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, parseWorkBuddyAuth, prepareChatBody, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };
+export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyHostHeartbeat, type WorkBuddyModelInfo, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };
