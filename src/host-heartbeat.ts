@@ -125,7 +125,11 @@ export function processStartTimeMs(pid: number): number | undefined {
       const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s))
       return Number.isFinite(ms) ? ms : undefined
     }
-    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    const out = execFileSync(
+      'ps',
+      ['-o', 'lstart=', '-p', String(pid)],
+      { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', LANG: 'C' } },
+    ).trim()
     if (out === '') return undefined
     const ms = Date.parse(out)
     return Number.isFinite(ms) ? ms : undefined

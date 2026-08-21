@@ -194,6 +194,13 @@ interface WorkBuddyShim {
   ready: Promise<void>;
   /** The shim origin, e.g. `http://127.0.0.1:39271`; valid after ready. */
   baseUrl(): string;
+  /**
+   * The per-process shared secret the plugin's own client must carry as
+   * `Authorization: Bearer <token>`. Lives only in memory; the adapter
+   * resolves this instead of the upstream access token, because the shim
+   * resolves the real credential itself via the store.
+   */
+  token(): string;
   /** Stop serving and destroy open connections. */
   close(): Promise<void>;
 }

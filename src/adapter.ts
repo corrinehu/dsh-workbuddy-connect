@@ -108,7 +108,11 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
 
   const adapter = new PiAiAdapter({
     profiles: () => profiles,
-    resolveApiKey: async () => (await store.resolve()).accessToken,
+    // Resolve the shim's per-process shared secret as the OpenAI apiKey so
+    // pi-ai sends it as `Authorization: Bearer <shared-secret>`. The shim
+    // validates this before forwarding and resolves the real WorkBuddy token
+    // itself via the store, so the secret never reaches upstream.
+    resolveApiKey: async () => shim.token(),
     ...resolveAttachments === undefined ? {} : { resolveAttachments },
   })
 

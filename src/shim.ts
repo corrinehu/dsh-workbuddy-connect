@@ -7,12 +7,15 @@
  * Inbound hardening: the loopback bind alone is not a trust boundary (any
  * local process or a DNS-rebinding page can reach 127.0.0.1), so every
  * request must carry a loopback Host header, browser-sent Origins must be
- * loopback, and chat POSTs must be application/json. The plugin's own
- * client satisfies all three by construction.
+ * loopback, chat POSTs must be application/json, and the Authorization
+ * header must carry the shim's per-process shared secret. The plugin's
+ * own client satisfies all four by construction; local attackers cannot
+ * read the secret out of the plugin process's memory.
  *
  * @module dsh-workbuddy-connect/shim
  */
 
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import type { WorkBuddyCredentialStore } from './auth.ts'
@@ -31,6 +34,13 @@ export interface WorkBuddyShim {
   ready: Promise<void>
   /** The shim origin, e.g. `http://127.0.0.1:39271`; valid after ready. */
   baseUrl(): string
+  /**
+   * The per-process shared secret the plugin's own client must carry as
+   * `Authorization: Bearer <token>`. Lives only in memory; the adapter
+   * resolves this instead of the upstream access token, because the shim
+   * resolves the real credential itself via the store.
+   */
+  token(): string
   /** Stop serving and destroy open connections. */
   close(): Promise<void>
 }
@@ -137,6 +147,26 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   const { store, client, catalog } = options
   const logger = options.logger
 
+  // Per-process shared secret. Lives only in memory; the adapter resolves it
+  // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
+  // The shim never forwards it upstream — the real credential comes from the
+  // store. A local attacker who can hit the port still cannot forge this.
+  const SHARED_SECRET = randomBytes(32).toString('base64url')
+
+  /** Constant-time bearer check; absent or mismatched bearers are rejected. */
+  function bearerOk(req: IncomingMessage): boolean {
+    const header = req.headers.authorization
+    if (typeof header !== 'string') return false
+    const match = /^Bearer\s+(.+)$/i.exec(header.trim())
+    if (match === null) return false
+    const presented = match[1] as string
+    const expected = SHARED_SECRET
+    const a = Buffer.from(presented)
+    const b = Buffer.from(expected)
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b)
+  }
+
   const server: Server = createServer((req, res) => {
     void handle(req, res)
   })
@@ -168,6 +198,10 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       }
       if (!originIsLoopback(req.headers.origin)) {
         writeOpenAIError(res, 403, 'origin_not_allowed', 'Origin must be a loopback origin')
+        return
+      }
+      if (!bearerOk(req)) {
+        writeOpenAIError(res, 401, 'unauthorized', 'missing or invalid Authorization bearer')
         return
       }
       const url = req.url ?? '/'
@@ -252,6 +286,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   return {
     ready,
     baseUrl,
+    token: () => SHARED_SECRET,
     close: () => new Promise<void>((resolve, reject) => {
       server.close(() => resolve())
       server.closeAllConnections()

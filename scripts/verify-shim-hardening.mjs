@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
- * Shim security verification (phase 1): proves the hardened shim rejects
- * hostile inbound requests while accepting the legitimate loopback client.
+ * Shim security verification (phases 1 + 2): proves the hardened shim rejects
+ * hostile inbound requests and unauthenticated local processes, while
+ * accepting the plugin's own legitimate client.
  *
  * Usage: node scripts/verify-shim-hardening.mjs
  *
- * It spins up the shim with a fake upstream, then fires four raw HTTP
+ * It spins up the shim with a fake upstream, then fires six raw HTTP
  * requests at it:
  *   1. hostile Host (DNS-rebinding shape)          -> expect 403
  *   2. hostile browser Origin (cross-site page)    -> expect 403
  *   3. non-JSON Content-Type (simple CSRF shape)   -> expect 415
- *   4. legitimate loopback shape (own client)      -> expect 200
- * Exits 0 only when all four behave as hardened code should.
+ *   4. legitimate shape with the shared secret     -> expect 200
+ *   5. legitimate shape WITHOUT the secret         -> expect 401
+ *   6. legitimate shape with a wrong secret        -> expect 401
+ * Exits 0 only when all six behave as hardened code should.
  */
 import { request } from 'node:http'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -76,17 +79,34 @@ check('hostile Origin rejected (browser CSRF)',
     host: `127.0.0.1:${port}`, origin: 'https://evil.com', 'content-type': 'application/json',
   }, JSON.stringify({ model: 'auto', messages: [] }))).status, 403)
 
-// 3. Simple-request CSRF shape: non-JSON Content-Type
+// 3. Simple-request CSRF shape: non-JSON Content-Type (bearer present so the
+//    401 gate is not what's being tested here)
 check('non-JSON Content-Type rejected (415)',
   (await rawRequest(port, 'POST', '/v1/chat/completions', {
     host: `127.0.0.1:${port}`, 'content-type': 'text/plain',
+    authorization: `Bearer ${shim.token()}`,
   }, JSON.stringify({ model: 'auto', messages: [] }))).status, 415)
 
-// 4. Legitimate loopback client shape (own fetch: loopback Host, no Origin, JSON)
-check('legitimate loopback request accepted',
+// 4. Legitimate loopback client shape with the shared-secret bearer
+check('legitimate loopback request (with bearer) accepted',
   (await rawRequest(port, 'POST', '/v1/chat/completions', {
     host: `127.0.0.1:${port}`, 'content-type': 'application/json',
+    authorization: `Bearer ${shim.token()}`,
   }, JSON.stringify({ model: 'auto', messages: [] }))).status, 200)
+
+// 5. Loopback shape WITHOUT the bearer — a hostile local process that knows
+//    the port but cannot read the secret out of the plugin's memory.
+check('loopback request without bearer rejected (local attacker)',
+  (await rawRequest(port, 'GET', '/healthz', {
+    host: `127.0.0.1:${port}`,
+  })).status, 401)
+
+// 6. Wrong bearer — must also be rejected.
+check('wrong bearer rejected',
+  (await rawRequest(port, 'POST', '/v1/chat/completions', {
+    host: `127.0.0.1:${port}`, 'content-type': 'application/json',
+    authorization: 'Bearer not-the-real-secret',
+  }, JSON.stringify({ model: 'auto', messages: [] }))).status, 401)
 
 await shim.close()
 await rm(dir, { recursive: true, force: true })

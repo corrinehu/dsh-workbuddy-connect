@@ -87,7 +87,9 @@ async function startShim(upstreamResponse: () => WorkBuddyChatResult): Promise<H
 describe('WorkBuddy shim', () => {
   it('lists the catalog on /v1/models', async () => {
     const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
-    const response = await fetch(`${harness.shim.baseUrl()}/v1/models`)
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/models`, {
+      headers: { authorization: `Bearer ${harness.shim.token()}` },
+    })
     expect(response.status).toBe(200)
     const body = await response.json() as { data: { id: string }[] }
     const ids = body.data.map(model => model.id)
@@ -106,7 +108,7 @@ describe('WorkBuddy shim', () => {
     }))
     const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
       body: JSON.stringify({
         model: 'auto',
         stream: false,
@@ -134,7 +136,7 @@ describe('WorkBuddy shim', () => {
     }))
     const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
       body: JSON.stringify({ model: 'auto', messages: [] }),
     })
     expect(response.status).toBe(402)
@@ -145,7 +147,9 @@ describe('WorkBuddy shim', () => {
 
   it('answers unknown routes with 404', async () => {
     const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
-    const response = await fetch(`${harness.shim.baseUrl()}/v1/nothing`)
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/nothing`, {
+      headers: { authorization: `Bearer ${harness.shim.token()}` },
+    })
     expect(response.status).toBe(404)
   })
 
@@ -176,7 +180,7 @@ describe('WorkBuddy shim', () => {
       port,
       method: 'GET',
       path: '/healthz',
-      headers: { host: `127.0.0.1:${port}` },
+      headers: { host: `127.0.0.1:${port}`, authorization: `Bearer ${harness.shim.token()}` },
     })
     expect(res.status).toBe(200)
   })
@@ -215,6 +219,7 @@ describe('WorkBuddy shim', () => {
         host: `127.0.0.1:${port}`,
         origin: 'http://127.0.0.1:3080',
         'content-type': 'application/json',
+        authorization: `Bearer ${harness.shim.token()}`,
       },
       body: JSON.stringify({ model: 'auto', messages: [] }),
     })
@@ -231,12 +236,52 @@ describe('WorkBuddy shim', () => {
       headers: {
         host: `127.0.0.1:${port}`,
         'content-type': 'text/plain',
+        authorization: `Bearer ${harness.shim.token()}`,
       },
       body: JSON.stringify({ model: 'auto', messages: [] }),
     })
     expect(res.status).toBe(415)
     expect(res.body).toContain('unsupported_media_type')
     // Nothing reached the upstream.
+    expect(harness.upstreamBodies).toHaveLength(0)
+  })
+
+  it('rejects a loopback request without a bearer (local process without the secret)', async () => {
+    const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    // Everything else about this request is legitimate: loopback Host, no
+    // Origin (a local process, not a browser), JSON body. Only the bearer is
+    // missing — this is the shape a hostile local process would send.
+    const res = await rawRequest({
+      port,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: {
+        host: `127.0.0.1:${port}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [] }),
+    })
+    expect(res.status).toBe(401)
+    expect(res.body).toContain('unauthorized')
+    expect(harness.upstreamBodies).toHaveLength(0)
+  })
+
+  it('rejects a loopback request with a wrong bearer', async () => {
+    const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    const res = await rawRequest({
+      port,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: {
+        host: `127.0.0.1:${port}`,
+        'content-type': 'application/json',
+        authorization: 'Bearer not-the-real-secret',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [] }),
+    })
+    expect(res.status).toBe(401)
     expect(harness.upstreamBodies).toHaveLength(0)
   })
 })
