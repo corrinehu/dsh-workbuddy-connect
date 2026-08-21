@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,6 +19,35 @@ interface Harness {
   store: WorkBuddyCredentialStore
   upstreamBodies: string[]
   upstreamResponse: () => WorkBuddyChatResult
+}
+
+/** Raw HTTP request with full header control (fetch forbids overriding Host). */
+function rawRequest(options: {
+  port: number
+  method: string
+  path: string
+  headers: Record<string, string>
+  body?: string
+}): Promise<{ status: number, body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request({
+      host: '127.0.0.1',
+      port: options.port,
+      method: options.method,
+      path: options.path,
+      headers: options.headers,
+    }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(chunk))
+      res.on('end', () => resolve({
+        status: res.statusCode ?? 0,
+        body: Buffer.concat(chunks).toString('utf8'),
+      }))
+    })
+    req.on('error', reject)
+    if (options.body !== undefined) req.write(options.body)
+    req.end()
+  })
 }
 
 async function startShim(upstreamResponse: () => WorkBuddyChatResult): Promise<Harness> {
@@ -104,6 +134,7 @@ describe('WorkBuddy shim', () => {
     }))
     const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'auto', messages: [] }),
     })
     expect(response.status).toBe(402)
@@ -121,5 +152,91 @@ describe('WorkBuddy shim', () => {
   it('binds loopback only', async () => {
     const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
     expect(harness.shim.baseUrl()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+  })
+
+  it('rejects a non-loopback Host header (DNS rebinding)', async () => {
+    const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    // A rebinding page resolves evil.com to 127.0.0.1; the browser then sends
+    // Host: evil.com:<port>. fetch() forbids overriding Host, so use raw http.
+    const res = await rawRequest({
+      port,
+      method: 'GET',
+      path: '/healthz',
+      headers: { host: 'evil.com' },
+    })
+    expect(res.status).toBe(403)
+    expect(res.body).toContain('host_not_allowed')
+  })
+
+  it('accepts Host with a loopback name plus port', async () => {
+    const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    const res = await rawRequest({
+      port,
+      method: 'GET',
+      path: '/healthz',
+      headers: { host: `127.0.0.1:${port}` },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('rejects a browser Origin from a non-loopback site', async () => {
+    const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    const res = await rawRequest({
+      port,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: {
+        host: `127.0.0.1:${port}`,
+        origin: 'https://evil.com',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [] }),
+    })
+    expect(res.status).toBe(403)
+    expect(res.body).toContain('origin_not_allowed')
+    // Nothing reached the upstream.
+    expect(harness.upstreamBodies).toHaveLength(0)
+  })
+
+  it('accepts a loopback browser Origin', async () => {
+    const harness = await startShim(() => ({
+      ok: true,
+      response: new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+    }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    const res = await rawRequest({
+      port,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: {
+        host: `127.0.0.1:${port}`,
+        origin: 'http://127.0.0.1:3080',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [] }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('rejects a chat POST with a non-JSON Content-Type (simple-request CSRF)', async () => {
+    const harness = await startShim(() => ({ ok: false, status: 500, kind: 'server', message: 'unused' }))
+    const port = Number(new URL(harness.shim.baseUrl()).port)
+    const res = await rawRequest({
+      port,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: {
+        host: `127.0.0.1:${port}`,
+        'content-type': 'text/plain',
+      },
+      body: JSON.stringify({ model: 'auto', messages: [] }),
+    })
+    expect(res.status).toBe(415)
+    expect(res.body).toContain('unsupported_media_type')
+    // Nothing reached the upstream.
+    expect(harness.upstreamBodies).toHaveLength(0)
   })
 })
