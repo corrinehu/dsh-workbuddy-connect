@@ -215,7 +215,9 @@ export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
                         <h3 style={quotaTitleStyle}>{t('creditsHeading')}</h3>
                         <span style={bodyStyle}>{t('creditsTotal', { total: formatNumber(status.credits.total) })}</span>
                       </div>
-                      {status.credits.accounts.map((account, index) => (
+                      {status.credits.accounts
+                        .filter(account => account.remain > 0)
+                        .map((account, index) => (
                         <CreditBar
                           key={`${account.packageName}-${String(index)}`}
                           label={account.packageName}
