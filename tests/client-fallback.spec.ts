@@ -9,6 +9,13 @@ import { describe, expect, it, vi } from 'vitest'
  * We cannot import the real client entry (it pulls browser-only DSH client
  * packages); instead we replicate the exact try/catch shape from
  * `src/client/index.tsx` and assert it swallows a simulated throw.
+ *
+ * DRIFT WARNING: the `apply()` below is a manual mirror of the real
+ * `apply()` in `src/client/index.tsx` (see the NOTE on that function). It is
+ * NOT the product code, so this test only proves the fallback idea works — it
+ * cannot detect a regression in the real entry. If you change the real
+ * `apply()`'s guarded body or its `console.error` message, update the mirror
+ * here too; a mismatch between the two is invisible to this test.
  */
 describe('client card fallback', () => {
   it('swallows a slot registration failure instead of throwing', () => {

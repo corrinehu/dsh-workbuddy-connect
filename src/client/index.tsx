@@ -30,6 +30,14 @@ export const inject = ['slots', 'locale']
  * the red "Failed to load plugins" banner. The host provider keeps working:
  * the `workbuddy` model channel is unaffected, and `dsh-workbuddy-connect
  * status` reports host health via the heartbeat file.
+ *
+ * NOTE: the try/catch boundary of this function is mirrored (duplicated) in
+ * `tests/client-fallback.spec.ts`, because the real client entry imports
+ * browser-only DSH packages that cannot load in the Node test environment.
+ * That test therefore does not import this function — it replicates its
+ * shape. If you change the guarded body or the `console.error` message here,
+ * update the mirrored `apply()` in that spec too, or the fallback test will
+ * silently diverge from this real implementation.
  */
 export function apply(ctx: ClientContext): void {
   try {
