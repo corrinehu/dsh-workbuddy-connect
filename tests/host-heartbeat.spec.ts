@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearHostHeartbeat,
   isHeartbeatProcessAlive,
+  processStartTimeMs,
   readHostHeartbeat,
   workbuddyHostHeartbeatPath,
   writeHostHeartbeat,
@@ -50,6 +51,31 @@ describe('host heartbeat', () => {
     // Clear removes the file.
     await clearHostHeartbeat()
     expect(await readHostHeartbeat()).toBeUndefined()
+  })
+
+  it('detects a recycled PID as dead (registeredAt after this process started)', async () => {
+    // The current process started at some point in the past. If a stale
+    // heartbeat claims a `registeredAt` that is *older* than this process's
+    // own start time, the PID cannot be the original host — it has been
+    // recycled by an unrelated process. Even though `kill(pid, 0)` says the
+    // PID is alive, the age check must report dead.
+    const startAtMs = processStartTimeMs(process.pid)
+    expect(startAtMs).toBeDefined()
+
+    // A heartbeat registered *before* this process began (the recycled-PID case).
+    const recycled = {
+      version: 1 as const,
+      package: 'dsh-workbuddy-connect' as const,
+      pluginVersion: '0.0.0-test',
+      registeredAt: (startAtMs as number) - 60_000, // 1 min before this process started
+      pid: process.pid,
+    }
+    expect(isHeartbeatProcessAlive(recycled)).toBe(false)
+
+    // A heartbeat registered *after* this process started (a genuine host on
+    // this very PID) is alive.
+    const genuine = { ...recycled, registeredAt: Date.now() }
+    expect(isHeartbeatProcessAlive(genuine)).toBe(true)
   })
 
   it('treats a malformed heartbeat file as absent', async () => {

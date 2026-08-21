@@ -49,6 +49,7 @@ export {
   WORKBUDDY_HOST_HEARTBEAT_FILENAME,
   clearHostHeartbeat,
   isHeartbeatProcessAlive,
+  processStartTimeMs,
   readHostHeartbeat,
   workbuddyHostHeartbeatPath,
   type WorkBuddyHostHeartbeat,
