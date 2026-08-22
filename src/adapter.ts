@@ -7,7 +7,7 @@
  */
 
 import { createProvider } from '@earendil-works/pi-ai'
-import type { Api, Model, Provider } from '@earendil-works/pi-ai'
+import type { Api, AuthContext, CredentialStore, Model, Provider } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -22,6 +22,39 @@ export const WORKBUDDY_PROVIDER = 'workbuddy'
 
 /** Provider idle ceiling while one stream read is outstanding. */
 export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+/**
+ * Image-request budgets at the dsh-llm-pi-ai defaults; the profile type made
+ * them required in 0.1.1-rc.2. WorkBuddy routes are text-only today, so these
+ * bounds never bite unless image input is added to the catalog.
+ */
+const REQUEST_IMAGE_BUDGETS = {
+  maxRequestImageBytes: 20_971_520,
+  requestImagePixelBudget: 4_194_304,
+  requestImageMaxBytes: 1_048_576,
+} as const
+
+/**
+ * Inert pi-ai auth plane. The workbuddy route authenticates only through the
+ * shim shared secret resolved per request by `resolveApiKey`, so pi-ai's own
+ * credential lifecycle and ambient discovery must never manufacture a
+ * credential for it. `PiAiAdapterOptions.auth` is required since 0.1.1-rc.2;
+ * every ambient question here answers "nothing stored, nothing set".
+ */
+const INERT_AUTH: { credentials: CredentialStore; authContext: AuthContext } = {
+  credentials: {
+    async read() { return undefined },
+    async list() { return [] },
+    async modify() {
+      throw new Error('dsh-workbuddy-connect: the workbuddy route has no pi-ai credential lifecycle')
+    },
+    async delete() {},
+  },
+  authContext: {
+    async env() { return undefined },
+    async fileExists() { return false },
+  },
+}
 
 /** No per-token pricing is knowable for a subscription quota; report zero. */
 const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const
@@ -101,6 +134,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     streamIdleTimeoutMs: WORKBUDDY_STREAM_IDLE_TIMEOUT_MS,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-workbuddy-connect retryPolicy'),
     configuredMaxTokens: new Map(),
+    ...REQUEST_IMAGE_BUDGETS,
     piProvider: provider,
   }
 
@@ -108,6 +142,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
 
   const adapter = new PiAiAdapter({
     profiles: () => profiles,
+    auth: INERT_AUTH,
     // Resolve the shim's per-process shared secret as the OpenAI apiKey so
     // pi-ai sends it as `Authorization: Bearer <shared-secret>`. The shim
     // validates this before forwarding and resolves the real WorkBuddy token

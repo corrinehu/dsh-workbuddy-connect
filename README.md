@@ -39,7 +39,7 @@ dsh web
 
 ## 已知限制
 
-- 在 macOS 与 DSH Web profile（`0.1.0-rc.7`+、Node 22+）下验证通过；Windows / Linux 的凭据默认路径未经验证，必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
+- 在 macOS 与 DSH Web profile（`0.1.1-rc.2`+、Node 22+）下验证通过；Windows / Linux 的凭据默认路径未经验证，必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
 
 ## 免责声明

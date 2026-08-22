@@ -33,7 +33,7 @@ dsh web
 
 ## Known limitations
 
-- Verified on macOS with the DSH Web profile (`0.1.0-rc.7`+, Node 22+). The default credential paths on Windows / Linux are unverified — point the `WORKBUDDY_AUTH_FILE` environment variable at the actual location if needed.
+- Verified on macOS with the DSH Web profile (`0.1.1-rc.2`+, Node 22+). The default credential paths on Windows / Linux are unverified — point the `WORKBUDDY_AUTH_FILE` environment variable at the actual location if needed.
 - Relies on WorkBuddy client interfaces (not a public API); the plugin may need updates as WorkBuddy changes.
 
 ## Disclaimer
