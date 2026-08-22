@@ -29,7 +29,12 @@
 前置：已安装并登录 WorkBuddy 桌面 App（插件复用 App 的登录状态，账号切换自动跟随）。
 
 ```sh
+# npm（推荐，自带预构建产物）
+dsh plugin --profile web add dsh-workbuddy-connect
+
+# 或从 GitHub 源码安装
 dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
+
 dsh web
 ```
 

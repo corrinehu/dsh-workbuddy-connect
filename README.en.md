@@ -23,7 +23,12 @@ Expand the card to see the account, token validity, and remaining credit.
 Prerequisite: the WorkBuddy desktop app is installed and signed in (the plugin reuses the app's sign-in state and follows account switches automatically).
 
 ```sh
+# npm (recommended; ships prebuilt artifacts)
+dsh plugin --profile web add dsh-workbuddy-connect
+
+# or install from the GitHub source
 dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
+
 dsh web
 ```
 

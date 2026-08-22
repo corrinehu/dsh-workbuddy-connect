@@ -43,6 +43,12 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/corrinehu/dsh-workbuddy-connect.git"
+  },
+  "homepage": "https://github.com/corrinehu/dsh-workbuddy-connect#readme",
+  "bugs": "https://github.com/corrinehu/dsh-workbuddy-connect/issues",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
