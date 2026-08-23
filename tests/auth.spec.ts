@@ -1,12 +1,22 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  defaultDesktopAuthCandidates,
   parseWorkBuddyAuth,
   WorkBuddyCredentialStore,
+  WORKBUDDY_AUTH_FILE_ENV,
   type WorkBuddyCredential,
 } from '../src/auth.ts'
+
+// node:os's ESM namespace rejects vi.spyOn (non-configurable), so homedir is
+// mocked at the module level; unset state falls through to the real one.
+const fakeHome = vi.hoisted(() => ({ home: undefined as string | undefined }))
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>()
+  return { ...actual, homedir: () => fakeHome.home ?? actual.homedir() }
+})
 
 const CLEANUP: (() => Promise<void>)[] = []
 
@@ -151,5 +161,123 @@ describe('WorkBuddyCredentialStore', () => {
     store.setDesktopPath(second)
     expect(store.desktopAuthPath()).toBe(second)
     await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-b', nickname: 'B' })
+  })
+})
+
+describe('Windows default desktop path probing', () => {
+  function windowsDoc(token: string): string {
+    return JSON.stringify({
+      auth: { accessToken: token, refreshToken: 'rt', expiresAt: Date.now() + 3600_000, domain: 'www.codebuddy.cn' },
+      account: { uid: 'uid-w', nickname: 'Win 用户' },
+    })
+  }
+
+  /** Fake a win32 home; probes are mocked in, dirs under a temp root. */
+  async function fakeWindowsHome(): Promise<{ home: string, local: string, roaming: string }> {
+    const home = await mkdtemp(join(tmpdir(), 'wb-win-'))
+    CLEANUP.push(() => rm(home, { recursive: true, force: true }))
+    const local = join(home, 'AppData', 'Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')
+    const roaming = join(home, 'AppData', 'Roaming', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')
+    return { home, local, roaming }
+  }
+
+  /** Run the case body as win32 with the given home; restore on exit. */
+  async function asWindows<T>(home: string, run: () => Promise<T>): Promise<T> {
+    const savedPlatform = process.platform
+    const savedEnv = process.env[WORKBUDDY_AUTH_FILE_ENV]
+    delete process.env[WORKBUDDY_AUTH_FILE_ENV]
+    fakeHome.home = home
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    try {
+      return await run()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true })
+      fakeHome.home = undefined
+      if (savedEnv === undefined) delete process.env[WORKBUDDY_AUTH_FILE_ENV]
+      else process.env[WORKBUDDY_AUTH_FILE_ENV] = savedEnv
+    }
+  }
+
+  it('lists Local before Roaming on win32', async () => {
+    const { home, local, roaming } = await fakeWindowsHome()
+    await asWindows(home, async () => {
+      const candidates = defaultDesktopAuthCandidates()
+      expect(candidates).toEqual([local, roaming])
+    })
+  })
+
+  it('reads the Local AppData file when only it exists', async () => {
+    const { home, local, roaming } = await fakeWindowsHome()
+    await mkdir(join(local, '..'), { recursive: true })
+    await writeFile(local, windowsDoc('at-local'))
+    await asWindows(home, async () => {
+      const store = new WorkBuddyCredentialStore({
+        ownPath: join(home, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-local', source: 'desktop' })
+      await expect(store.desktopFilePresent()).resolves.toBe(true)
+    })
+  })
+
+  it('falls back to Roaming when only it exists (older desktop builds)', async () => {
+    const { home, roaming } = await fakeWindowsHome()
+    await mkdir(join(roaming, '..'), { recursive: true })
+    await writeFile(roaming, windowsDoc('at-roaming'))
+    await asWindows(home, async () => {
+      const store = new WorkBuddyCredentialStore({
+        ownPath: join(home, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-roaming', source: 'desktop' })
+      await expect(store.desktopFilePresent()).resolves.toBe(true)
+    })
+  })
+
+  it('prefers Local when both exist', async () => {
+    const { home, local, roaming } = await fakeWindowsHome()
+    await mkdir(join(local, '..'), { recursive: true })
+    await mkdir(join(roaming, '..'), { recursive: true })
+    await writeFile(local, windowsDoc('at-local'))
+    await writeFile(roaming, windowsDoc('at-roaming'))
+    await asWindows(home, async () => {
+      const store = new WorkBuddyCredentialStore({
+        ownPath: join(home, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-local' })
+    })
+  })
+
+  it('reports signed-out and lists both candidates when neither exists', async () => {
+    const { home, local, roaming } = await fakeWindowsHome()
+    await asWindows(home, async () => {
+      const store = new WorkBuddyCredentialStore({
+        ownPath: join(home, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      await expect(store.status()).resolves.toMatchObject({ state: 'signed-out' })
+      await expect(store.desktopFilePresent()).resolves.toBe(false)
+      await expect(store.resolve()).rejects.toThrow(new RegExp(local.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)))
+      await expect(store.resolve()).rejects.toThrow(/AppData.*Local[\s\S]*AppData.*Roaming/)
+    })
+  })
+
+  it('uses an explicit desktopPath verbatim without probing on win32', async () => {
+    const { home, local, roaming } = await fakeWindowsHome()
+    const explicit = join(home, 'explicit.info')
+    await mkdir(join(local, '..'), { recursive: true })
+    await writeFile(local, windowsDoc('at-local'))
+    await writeFile(explicit, windowsDoc('at-explicit'))
+    await asWindows(home, async () => {
+      const store = new WorkBuddyCredentialStore({
+        desktopPath: explicit,
+        ownPath: join(home, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-explicit' })
+      expect(store.desktopAuthPath()).toBe(explicit)
+      void roaming
+    })
   })
 })

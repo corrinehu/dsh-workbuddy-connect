@@ -107,7 +107,14 @@ declare const WORKBUDDY_AUTH_FILENAME = ".workbuddy-auth.json";
 declare const WORKBUDDY_AUTH_FILE_ENV = "WORKBUDDY_AUTH_FILE";
 /** Plugin-owned copy path inside the Harness home. */
 declare function workbuddyOwnAuthPath(): string;
-/** Platform default for the WorkBuddy desktop app's auth file. */
+/**
+ * Platform-default candidates for the WorkBuddy desktop app's auth file, in
+ * probe order. Windows probes both AppData roots: current builds write under
+ * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). macOS and
+ * Linux have a single well-known location.
+ */
+declare function defaultDesktopAuthCandidates(): string[];
+/** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
 declare function defaultDesktopAuthPath(): string | undefined;
 /**
  * Parse a WorkBuddy auth document in either on-disk shape: the plugin OAuth
@@ -133,8 +140,10 @@ declare class WorkBuddyCredentialStore {
   constructor(options: WorkBuddyStoreOptions);
   /**
    * Configuration precedence for the desktop file: the plugin's configured
-   * path, then the environment variable, then the platform default.
+   * path, then the environment variable, then the platform defaults. An
+   * explicit path is used verbatim; the defaults are a probe order.
    */
+  private resolveDesktopCandidates;
   private resolveDesktopPath;
   /**
    * Repoint the desktop file; a settings change applies on the next read.
@@ -158,9 +167,15 @@ declare class WorkBuddyCredentialStore {
   private needsRefresh;
   private refreshNow;
   private saveOwn;
+  /**
+   * Read the first desktop candidate that exists. Only an absent file
+   * (ENOENT) falls through to the next candidate; a file that is present
+   * but unparsable is authoritative for its slot, so a stale older-version
+   * file never silently wins over a broken newer one.
+   */
   private readDesktop;
   private readOwn;
-  /** Whether the desktop file exists and is a regular file; diagnostics only. */
+  /** Whether any desktop-file candidate exists as a regular file; diagnostics only. */
   desktopFilePresent(): Promise<boolean>;
 }
 //#endregion
@@ -329,4 +344,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyHostHeartbeat, type WorkBuddyModelInfo, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };
+export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyHostHeartbeat, type WorkBuddyModelInfo, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };

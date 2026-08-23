@@ -25,6 +25,7 @@ export {
   type WorkBuddyModelInfo,
 } from './catalog.ts'
 export {
+  defaultDesktopAuthCandidates,
   defaultDesktopAuthPath,
   parseWorkBuddyAuth,
   WORKBUDDY_AUTH_FILE_ENV,

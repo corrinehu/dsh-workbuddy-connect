@@ -70,19 +70,32 @@ export function workbuddyOwnAuthPath(): string {
   return join(resolveDshHome(), WORKBUDDY_AUTH_FILENAME)
 }
 
-/** Platform default for the WorkBuddy desktop app's auth file. */
-export function defaultDesktopAuthPath(): string | undefined {
+/**
+ * Platform-default candidates for the WorkBuddy desktop app's auth file, in
+ * probe order. Windows probes both AppData roots: current builds write under
+ * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). macOS and
+ * Linux have a single well-known location.
+ */
+export function defaultDesktopAuthCandidates(): string[] {
   const home = homedir()
   if (process.platform === 'darwin') {
-    return join(home, 'Library', 'Application Support', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')
+    return [join(home, 'Library', 'Application Support', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')]
   }
   if (process.platform === 'win32') {
-    return join(home, 'AppData', 'Roaming', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')
+    return [
+      join(home, 'AppData', 'Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info'),
+      join(home, 'AppData', 'Roaming', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info'),
+    ]
   }
   if (process.platform === 'linux') {
-    return join(home, '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')
+    return [join(home, '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')]
   }
-  return undefined
+  return []
+}
+
+/** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
+export function defaultDesktopAuthPath(): string | undefined {
+  return defaultDesktopAuthCandidates()[0]
 }
 
 /** Normalize an expiry that may arrive in seconds or milliseconds. */
@@ -192,13 +205,19 @@ export class WorkBuddyCredentialStore {
 
   /**
    * Configuration precedence for the desktop file: the plugin's configured
-   * path, then the environment variable, then the platform default.
+   * path, then the environment variable, then the platform defaults. An
+   * explicit path is used verbatim; the defaults are a probe order.
    */
-  private resolveDesktopPath(): string | undefined {
+  private resolveDesktopCandidates(): string[] {
     const fromEnv = process.env[WORKBUDDY_AUTH_FILE_ENV]
-    return this.desktopPathOverride
+    const explicit = this.desktopPathOverride
       ?? (fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv : undefined)
-      ?? defaultDesktopAuthPath()
+    if (explicit !== undefined) return [explicit]
+    return defaultDesktopAuthCandidates()
+  }
+
+  private resolveDesktopPath(): string | undefined {
+    return this.resolveDesktopCandidates()[0]
   }
 
   /**
@@ -233,7 +252,8 @@ export class WorkBuddyCredentialStore {
   async resolve(): Promise<WorkBuddyCredential> {
     const credential = await this.current()
     if (credential === undefined) {
-      const desktop = this.resolveDesktopPath() ?? '(no desktop path on this platform)'
+      const candidates = this.resolveDesktopCandidates()
+      const desktop = candidates.length > 0 ? candidates.join(' or ') : '(no desktop path on this platform)'
       throw new Error(
         `workbuddy: no signed-in WorkBuddy account found; sign in once in the WorkBuddy desktop app`
         + ` (expected ${desktop} or WORKBUDDY_AUTH_FILE), or refresh an existing session`,
@@ -313,15 +333,21 @@ export class WorkBuddyCredentialStore {
     })
   }
 
+  /**
+   * Read the first desktop candidate that exists. Only an absent file
+   * (ENOENT) falls through to the next candidate; a file that is present
+   * but unparsable is authoritative for its slot, so a stale older-version
+   * file never silently wins over a broken newer one.
+   */
   private async readDesktop(): Promise<WorkBuddyCredential | undefined> {
-    const desktopPath = this.resolveDesktopPath()
-    if (desktopPath === undefined) return undefined
-    try {
-      return parseWorkBuddyAuth(await readFile(desktopPath, 'utf8'))
-    } catch (error: unknown) {
-      if (isENOENT(error)) return undefined
-      throw error
+    for (const desktopPath of this.resolveDesktopCandidates()) {
+      try {
+        return parseWorkBuddyAuth(await readFile(desktopPath, 'utf8'))
+      } catch (error: unknown) {
+        if (!isENOENT(error)) throw error
+      }
     }
+    return undefined
   }
 
   private async readOwn(): Promise<WorkBuddyCredential | undefined> {
@@ -333,14 +359,15 @@ export class WorkBuddyCredentialStore {
     }
   }
 
-  /** Whether the desktop file exists and is a regular file; diagnostics only. */
+  /** Whether any desktop-file candidate exists as a regular file; diagnostics only. */
   async desktopFilePresent(): Promise<boolean> {
-    const desktopPath = this.resolveDesktopPath()
-    if (desktopPath === undefined) return false
-    try {
-      return (await stat(desktopPath)).isFile()
-    } catch {
-      return false
+    for (const desktopPath of this.resolveDesktopCandidates()) {
+      try {
+        if ((await stat(desktopPath)).isFile()) return true
+      } catch {
+        // absent or not a regular file — try the next candidate
+      }
     }
+    return false
   }
 }
