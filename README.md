@@ -28,23 +28,41 @@
 
 前置：已安装并登录 WorkBuddy 桌面 App（插件复用 App 的登录状态，账号切换自动跟随）。
 
+插件在三种 DSH 界面下均可运行：**Web**、**Desktop**、**TUI**。根据你使用的 profile 选对应命令安装。
+
 ```sh
-# npm（推荐，自带预构建产物）
+# Web（推荐，自带预构建产物）
 dsh plugin --profile web add dsh-workbuddy-connect
+dsh web
 
-# 或从 GitHub 源码安装
+# 或从 GitHub 源码安装 Web 版
 dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
-
 dsh web
 ```
 
+```sh
+# Desktop（DSH Desktop 桌面版）
+dsh plugin --profile desktop add dsh-workbuddy-connect
+dsh --profile desktop
+```
+
+```sh
+# TUI（终端界面）
+dsh plugin --profile dsh-tui add dsh-workbuddy-connect
+dsh --profile dsh-tui
+```
+
+> 提示：`dsh-tui` profile 需用 pnpm 11 安装（PATH 里是其他版本会报 `ERR_PNPM_UNEXPECTED_STORE`，用 `npx pnpm@11` 即可）；已验证 dsh `0.1.1-rc.2`。
+
+安装后，在对应界面的模型选择器里切换到 WorkBuddy 模型即可使用；Web 下设置卡片（设置 → 插件 → DSH WorkBuddy Connect）可查看账号信息、令牌有效期与剩余积分，TUI 下可在 `/settings` 里配置 `authFile`。
+
 ## 命令行
 
-`dsh plugin --profile web exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。
+`dsh plugin --profile <web|desktop|dsh-tui> exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。
 
 ## 已知限制
 
-- 在 macOS 与 DSH Web profile（`0.1.1-rc.2`+、Node 22+）下验证通过；Windows / Linux 的凭据默认路径未经验证，必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
+- 在 macOS 的 DSH Web / Desktop / TUI profile（`0.1.1-rc.2`+、Node 22+）下验证通过；Windows / Linux 的凭据默认路径未经验证，必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
 
 ## 免责声明

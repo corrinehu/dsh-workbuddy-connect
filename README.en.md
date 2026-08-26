@@ -22,23 +22,41 @@ Expand the card to see the account, token validity, and remaining credit.
 
 Prerequisite: the WorkBuddy desktop app is installed and signed in (the plugin reuses the app's sign-in state and follows account switches automatically).
 
+The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI**. Pick the install command that matches the profile you use.
+
 ```sh
-# npm (recommended; ships prebuilt artifacts)
+# Web (recommended; ships prebuilt artifacts)
 dsh plugin --profile web add dsh-workbuddy-connect
+dsh web
 
-# or install from the GitHub source
+# or install the Web version from the GitHub source
 dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
-
 dsh web
 ```
 
+```sh
+# Desktop (the DSH Desktop app)
+dsh plugin --profile desktop add dsh-workbuddy-connect
+dsh --profile desktop
+```
+
+```sh
+# TUI (terminal UI)
+dsh plugin --profile dsh-tui add dsh-workbuddy-connect
+dsh --profile dsh-tui
+```
+
+> Note: the `dsh-tui` profile requires pnpm 11 to install packages (a different pnpm on PATH fails with `ERR_PNPM_UNEXPECTED_STORE` — use `npx pnpm@11`); verified on dsh `0.1.1-rc.2`.
+
+After installing, switch to a WorkBuddy model in the model picker of the interface you chose. On Web, the settings card (Settings → Plugins → DSH WorkBuddy Connect) shows the account, token validity, and remaining credit; on TUI, configure `authFile` in `/settings`.
+
 ## CLI
 
-`dsh plugin --profile web exec dsh-workbuddy-connect status`: sign-in state and remaining credit (`--json` for machine-readable output; `doctor` for diagnostics and `logout` for credential cleanup are also available).
+`dsh plugin --profile <web|desktop|dsh-tui> exec dsh-workbuddy-connect status`: sign-in state and remaining credit (`--json` for machine-readable output; `doctor` for diagnostics and `logout` for credential cleanup are also available).
 
 ## Known limitations
 
-- Verified on macOS with the DSH Web profile (`0.1.1-rc.2`+, Node 22+). The default credential paths on Windows / Linux are unverified — point the `WORKBUDDY_AUTH_FILE` environment variable at the actual location if needed.
+- Verified on macOS with the DSH Web / Desktop / TUI profile (`0.1.1-rc.2`+, Node 22+). The default credential paths on Windows / Linux are unverified — point the `WORKBUDDY_AUTH_FILE` environment variable at the actual location if needed.
 - Relies on WorkBuddy client interfaces (not a public API); the plugin may need updates as WorkBuddy changes.
 
 ## Disclaimer
