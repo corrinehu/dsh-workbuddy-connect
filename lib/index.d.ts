@@ -110,8 +110,9 @@ declare function workbuddyOwnAuthPath(): string;
 /**
  * Platform-default candidates for the WorkBuddy desktop app's auth file, in
  * probe order. Windows probes both AppData roots: current builds write under
- * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). macOS and
- * Linux have a single well-known location.
+ * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). WSL probes
+ * those same Windows locations through its mounted Windows profile before the
+ * native Linux location.
  */
 declare function defaultDesktopAuthCandidates(): string[];
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */

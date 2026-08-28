@@ -62,7 +62,7 @@ dsh --profile dsh-tui
 
 ## 已知限制
 
-- 在 macOS 的 DSH Web / Desktop / TUI profile（`0.1.1-rc.2`+、Node 22+）下验证通过；Windows / Linux 的凭据默认路径未经验证，必要时可通过环境变量 `WORKBUDDY_AUTH_FILE` 指定实际位置。
+- 在 macOS 的 DSH Web / Desktop / TUI profile（`0.1.1-rc.2`+、Node 22+）下验证通过。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE` 指定实际位置。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
 
 ## 免责声明

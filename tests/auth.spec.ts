@@ -12,10 +12,17 @@ import {
 
 // node:os's ESM namespace rejects vi.spyOn (non-configurable), so homedir is
 // mocked at the module level; unset state falls through to the real one.
-const fakeHome = vi.hoisted(() => ({ home: undefined as string | undefined }))
+const fakeOs = vi.hoisted(() => ({
+  home: undefined as string | undefined,
+  release: undefined as string | undefined,
+}))
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>()
-  return { ...actual, homedir: () => fakeHome.home ?? actual.homedir() }
+  return {
+    ...actual,
+    homedir: () => fakeOs.home ?? actual.homedir(),
+    release: () => fakeOs.release ?? actual.release(),
+  }
 })
 
 const CLEANUP: (() => Promise<void>)[] = []
@@ -186,13 +193,13 @@ describe('Windows default desktop path probing', () => {
     const savedPlatform = process.platform
     const savedEnv = process.env[WORKBUDDY_AUTH_FILE_ENV]
     delete process.env[WORKBUDDY_AUTH_FILE_ENV]
-    fakeHome.home = home
+    fakeOs.home = home
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     try {
       return await run()
     } finally {
       Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true })
-      fakeHome.home = undefined
+      fakeOs.home = undefined
       if (savedEnv === undefined) delete process.env[WORKBUDDY_AUTH_FILE_ENV]
       else process.env[WORKBUDDY_AUTH_FILE_ENV] = savedEnv
     }
@@ -278,6 +285,84 @@ describe('Windows default desktop path probing', () => {
       await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-explicit' })
       expect(store.desktopAuthPath()).toBe(explicit)
       void roaming
+    })
+  })
+})
+
+describe('WSL default desktop path probing', () => {
+  const AUTH_TAIL = join('CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')
+
+  async function asWsl<T>(options: {
+    home: string
+    env?: Partial<Record<'APPDATA' | 'LOCALAPPDATA' | 'USERPROFILE', string>>
+  }, run: () => Promise<T>): Promise<T> {
+    const savedPlatform = process.platform
+    const savedEnv = Object.fromEntries(
+      ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'WSL_DISTRO_NAME', 'WSL_INTEROP']
+        .map(name => [name, process.env[name]]),
+    )
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    fakeOs.home = options.home
+    fakeOs.release = '6.6.87.2-microsoft-standard-WSL2'
+    delete process.env['APPDATA']
+    delete process.env['LOCALAPPDATA']
+    delete process.env['USERPROFILE']
+    delete process.env['WSL_DISTRO_NAME']
+    delete process.env['WSL_INTEROP']
+    Object.assign(process.env, options.env)
+    try {
+      return await run()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: savedPlatform, configurable: true })
+      fakeOs.home = undefined
+      fakeOs.release = undefined
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  }
+
+  it('probes the matching mounted Windows profile before the Linux path', async () => {
+    await asWsl({ home: '/home/alice' }, async () => {
+      expect(defaultDesktopAuthCandidates()).toEqual([
+        join('/mnt/c/Users/alice/AppData/Local', AUTH_TAIL),
+        join('/mnt/c/Users/alice/AppData/Roaming', AUTH_TAIL),
+        join('/home/alice/.config', AUTH_TAIL),
+      ])
+    })
+  })
+
+  it('uses translated WSL environment paths when the Windows user differs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wb-wsl-'))
+    CLEANUP.push(() => rm(root, { recursive: true, force: true }))
+    const windowsProfile = join(root, 'Users', 'windows-alice')
+    const local = join(windowsProfile, 'AppData', 'Local', AUTH_TAIL)
+    await mkdir(join(local, '..'), { recursive: true })
+    await writeFile(local, nestedDoc(Date.now() + 3600_000))
+
+    await asWsl({ home: '/home/linux-alice', env: { USERPROFILE: windowsProfile } }, async () => {
+      const store = new WorkBuddyCredentialStore({
+        ownPath: join(root, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      expect(store.desktopAuthPath()).toBe(local)
+      await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at', source: 'desktop' })
+    })
+  })
+
+  it('converts Windows-form AppData environment paths to WSL mount paths', async () => {
+    await asWsl({
+      home: '/home/alice',
+      env: {
+        LOCALAPPDATA: String.raw`D:\Users\alice\AppData\Local`,
+        APPDATA: String.raw`D:\Users\alice\AppData\Roaming`,
+      },
+    }, async () => {
+      expect(defaultDesktopAuthCandidates().slice(0, 2)).toEqual([
+        join('/mnt/d/Users/alice/AppData/Local', AUTH_TAIL),
+        join('/mnt/d/Users/alice/AppData/Roaming', AUTH_TAIL),
+      ])
     })
   })
 })
