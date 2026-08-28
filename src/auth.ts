@@ -9,8 +9,8 @@
  */
 
 import { readFile, rm, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, release } from 'node:os'
+import { basename, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { WorkBuddyRefreshOutcome } from './upstream.ts'
@@ -70,11 +70,45 @@ export function workbuddyOwnAuthPath(): string {
   return join(resolveDshHome(), WORKBUDDY_AUTH_FILENAME)
 }
 
+const DESKTOP_AUTH_RELATIVE_PATH = ['CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info'] as const
+
+/** Whether this Linux process is running inside Windows Subsystem for Linux. */
+function isWsl(): boolean {
+  if (process.platform !== 'linux') return false
+  if (process.env['WSL_DISTRO_NAME'] !== undefined || process.env['WSL_INTEROP'] !== undefined) return true
+  return release().toLowerCase().includes('microsoft')
+}
+
+/** Convert a Windows drive path to WSL's conventional `/mnt/<drive>` form. */
+function windowsPathForWsl(value: string | undefined): string | undefined {
+  const path = value?.trim()
+  if (!path) return undefined
+  if (path.startsWith('/')) return path
+  const drivePath = /^([a-z]):[\\/](.*)$/iu.exec(path)
+  if (drivePath === null) return undefined
+  return join('/mnt', drivePath[1]!.toLowerCase(), ...drivePath[2]!.split(/[\\/]+/u))
+}
+
+/** Windows desktop credential candidates visible from a WSL process. */
+function wslDesktopAuthCandidates(home: string): string[] {
+  const profile = windowsPathForWsl(process.env['USERPROFILE'])
+    ?? join('/mnt/c/Users', basename(home))
+  const localAppData = windowsPathForWsl(process.env['LOCALAPPDATA'])
+    ?? join(profile, 'AppData', 'Local')
+  const roamingAppData = windowsPathForWsl(process.env['APPDATA'])
+    ?? join(profile, 'AppData', 'Roaming')
+  return [
+    join(localAppData, ...DESKTOP_AUTH_RELATIVE_PATH),
+    join(roamingAppData, ...DESKTOP_AUTH_RELATIVE_PATH),
+  ]
+}
+
 /**
  * Platform-default candidates for the WorkBuddy desktop app's auth file, in
  * probe order. Windows probes both AppData roots: current builds write under
- * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). macOS and
- * Linux have a single well-known location.
+ * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). WSL probes
+ * those same Windows locations through its mounted Windows profile before the
+ * native Linux location.
  */
 export function defaultDesktopAuthCandidates(): string[] {
   const home = homedir()
@@ -88,7 +122,8 @@ export function defaultDesktopAuthCandidates(): string[] {
     ]
   }
   if (process.platform === 'linux') {
-    return [join(home, '.config', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')]
+    const linux = join(home, '.config', ...DESKTOP_AUTH_RELATIVE_PATH)
+    return isWsl() ? [...wslDesktopAuthCandidates(home), linux] : [linux]
   }
   return []
 }

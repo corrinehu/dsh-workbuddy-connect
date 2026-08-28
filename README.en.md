@@ -56,7 +56,7 @@ After installing, switch to a WorkBuddy model in the model picker of the interfa
 
 ## Known limitations
 
-- Verified on macOS with the DSH Web / Desktop / TUI profile (`0.1.1-rc.2`+, Node 22+). The default credential paths on Windows / Linux are unverified — point the `WORKBUDDY_AUTH_FILE` environment variable at the actual location if needed.
+- Verified on macOS with the DSH Web / Desktop / TUI profile (`0.1.1-rc.2`+, Node 22+). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` at the actual file.
 - Relies on WorkBuddy client interfaces (not a public API); the plugin may need updates as WorkBuddy changes.
 
 ## Disclaimer
