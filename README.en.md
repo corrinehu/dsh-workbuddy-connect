@@ -10,6 +10,8 @@ Brings every model in the WorkBuddy desktop app (GLM-5.3, GLM-5.2, DeepSeek-V4-P
 
 ![WorkBuddy models in the DSH model picker](assets/1.png)
 
+- **Image input**: image messages are admitted per the upstream's per-model capability flag — most models (GLM-5.3-Flash, GLM-5.2, the DeepSeek-V4 series, etc.) accept pasted or dragged-in images, while text-only models (e.g. GLM-5.1) keep a clear refusal.
+
 - **Info at a glance**: Settings → Plugins → DSH WorkBuddy Connect card
 
 ![Settings card showing the plugin](assets/2.png)
