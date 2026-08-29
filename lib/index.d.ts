@@ -13,6 +13,12 @@ interface WorkBuddyUpstreamModel {
   name: string;
   contextWindow: number;
   maxTokens: number;
+  /**
+   * Upstream-declared image input capability. Missing or false upstream data
+   * resolves to false, so an unknown model stays text-only: over-claiming
+   * admits an image the provider then rejects after the message is durable.
+   */
+  supportsImages: boolean;
 }
 /** One billing package and its remaining credit. */
 interface WorkBuddyCreditAccount {
@@ -184,9 +190,10 @@ declare class WorkBuddyCredentialStore {
 /** One model entry the adapter exposes. */
 type WorkBuddyModelInfo = WorkBuddyUpstreamModel;
 /**
- * Static CLI models observed on the CN endpoint (2026-08-17). The upstream
- * refresh replaces this list at startup; it exists so the provider registers
- * with a usable catalog even while the first fetch is in flight or offline.
+ * Static CLI models observed on the CN endpoint (2026-08-17; image flags
+ * re-verified against the live catalog 2026-08-29). The upstream refresh
+ * replaces this list at startup; it exists so the provider registers with a
+ * usable catalog even while the first fetch is in flight or offline.
  */
 declare const FALLBACK_WORKBUDDY_MODELS: readonly WorkBuddyModelInfo[];
 /** Mutable catalog shared by the shim's `/v1/models` and the adapter. */

@@ -27,6 +27,12 @@ export interface WorkBuddyUpstreamModel {
   name: string
   contextWindow: number
   maxTokens: number
+  /**
+   * Upstream-declared image input capability. Missing or false upstream data
+   * resolves to false, so an unknown model stays text-only: over-claiming
+   * admits an image the provider then rejects after the message is durable.
+   */
+  supportsImages: boolean
 }
 
 /** One billing package and its remaining credit. */
@@ -357,6 +363,7 @@ export class WorkBuddyUpstreamClient {
         name: typeof wrapped['name'] === 'string' && wrapped['name'] !== '' ? wrapped['name'] : id,
         contextWindow: input,
         maxTokens: output,
+        supportsImages: wrapped['supportsImages'] === true && wrapped['disabledMultimodal'] !== true,
       })
     }
     const models = cliIds

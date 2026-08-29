@@ -25,8 +25,8 @@ export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
 
 /**
  * Image-request budgets at the dsh-llm-pi-ai defaults; the profile type made
- * them required in 0.1.1-rc.2. WorkBuddy routes are text-only today, so these
- * bounds never bite unless image input is added to the catalog.
+ * them required in 0.1.1-rc.2. They bound requests to models whose catalog
+ * entry declares `supportsImages`; text-only models never receive images.
  */
 const REQUEST_IMAGE_BUDGETS = {
   maxRequestImageBytes: 20_971_520,
@@ -83,7 +83,7 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
     api: 'openai-completions',
     provider: WORKBUDDY_PROVIDER,
     baseUrl,
-    input: ['text'],
+    input: info.supportsImages === true ? ['text', 'image'] : ['text'],
     cost: NO_COST,
     contextWindow: info.contextWindow,
     maxTokens: info.maxTokens,

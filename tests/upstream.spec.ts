@@ -46,6 +46,56 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+describe('WorkBuddyUpstreamClient.fetchModels', () => {
+  /** Build the models-catalog envelope that `fetchModels` unwraps. */
+  function modelsEnvelope(models: unknown[], cliIds: string[]): string {
+    return JSON.stringify({
+      code: 0,
+      msg: 'ok',
+      data: {
+        models,
+        agents: [{ name: 'cli', models: cliIds }],
+      },
+    })
+  }
+
+  it('propagates supportsImages per model, treating unknown or disabled as text-only', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(modelsEnvelope([
+      { id: 'm-img', name: 'Image Model', maxInputTokens: 100_000, maxOutputTokens: 32_000, supportsImages: true },
+      { id: 'm-muted', name: 'Multimodal Switched Off', maxInputTokens: 100_000, maxOutputTokens: 32_000, supportsImages: true, disabledMultimodal: true },
+      { id: 'm-text', name: 'Text Model', maxInputTokens: 100_000, maxOutputTokens: 32_000, supportsImages: false },
+      { id: 'm-unknown', name: 'No Modality Field', maxInputTokens: 100_000, maxOutputTokens: 32_000 },
+      { id: 'm-noncli', name: 'Not A CLI Model', maxInputTokens: 100_000, maxOutputTokens: 32_000, supportsImages: true },
+    ], ['m-img', 'm-muted', 'm-text', 'm-unknown']))))
+
+    const models = await new WorkBuddyUpstreamClient().fetchModels(CREDENTIAL)
+    const byId = new Map(models.map(model => [model.id, model]))
+
+    expect(models).toHaveLength(4)
+    expect(byId.get('m-img')?.supportsImages).toBe(true)
+    expect(byId.get('m-muted')?.supportsImages).toBe(false)
+    expect(byId.get('m-text')?.supportsImages).toBe(false)
+    // Absent field means unknown capability; the conservative answer is text-only.
+    expect(byId.get('m-unknown')?.supportsImages).toBe(false)
+  })
+
+  it('keeps the catalog shape (name, contextWindow, maxTokens) alongside the flag', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(modelsEnvelope([
+      { id: 'm-1', name: 'Model One', maxInputTokens: 168_000, maxOutputTokens: 32_000, supportsImages: true },
+    ], ['m-1']))))
+
+    const models = await new WorkBuddyUpstreamClient().fetchModels(CREDENTIAL)
+    expect(models).toHaveLength(1)
+    expect(models[0]).toEqual({
+      id: 'm-1',
+      name: 'Model One',
+      contextWindow: 168_000,
+      maxTokens: 32_000,
+      supportsImages: true,
+    })
+  })
+})
+
 describe('WorkBuddyUpstreamClient.fetchCredits', () => {
   it('unwraps the nested envelope and aggregates total across accounts', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([

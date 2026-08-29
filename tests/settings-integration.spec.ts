@@ -63,6 +63,12 @@ describe('WorkBuddy Host settings integration', () => {
     expect(models.map(model => model.id)).toContain('auto')
     expect(models.map(model => model.id)).toContain('deepseek-v4-pro')
 
+    // Image modalities follow the per-model catalog flag (fallback list here):
+    // image-capable entries expose `image`, glm-5.1 stays text-only.
+    const modalities = new Map(models.map(model => [model.id, model.inputModalities]))
+    expect(modalities.get('auto')).toContain('image')
+    expect(modalities.get('glm-5.1')).toEqual(['text'])
+
     // A settings write validates against the schema and persists.
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { authFile: '/tmp/other-workbuddy.info' })
     const updated = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
