@@ -11,11 +11,20 @@ const PACKAGE_VERSION = JSON.parse(
 /** Build-time define map; `src/version.ts` reads `__DSH_WORKBUDDY_VERSION__`. */
 const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION) }
 
+/**
+ * Modules the browser bundle must `require()` rather than inline.
+ *
+ * `@deepseek-ai/dsh-client-runtime` no longer exists in DSH 0.1.2: the `slots`
+ * service it used to provide lives in `@deepseek-ai/dsh-client-ui-renderer`,
+ * and the client context type is cordis's `Context` directly. Listing the
+ * renderer here keeps the registry a single host-resolved instance instead of
+ * embedding a second copy into this bundle.
+ */
 const CLIENT_EXTERNALS = [
   'react',
   'react/jsx-runtime',
   '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-runtime/client',
+  '@deepseek-ai/dsh-client-ui-renderer/client',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-locale/client',
 ] as const
