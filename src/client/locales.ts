@@ -20,6 +20,10 @@ export const en = {
   refreshing: 'Refreshing…',
   requestFailed: 'Request failed',
   accountHeading: 'Account',
+  modelsHeading: 'Model offers',
+  freeModel: 'Free',
+  badgeLimitedFree: 'Limited-time free',
+  badgeNightDiscount: 'Night discount',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -44,4 +48,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   refreshing: '正在刷新…',
   requestFailed: '请求失败',
   accountHeading: '账号',
+  modelsHeading: '模型优惠',
+  freeModel: '免费',
+  badgeLimitedFree: '限时免费',
+  badgeNightDiscount: '夜间折扣',
 }

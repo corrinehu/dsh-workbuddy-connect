@@ -7,7 +7,7 @@
  */
 
 import { createProvider } from '@earendil-works/pi-ai'
-import type { Api, AuthContext, CredentialStore, Model, Provider } from '@earendil-works/pi-ai'
+import type { Api, AuthContext, CredentialStore, Model, ModelThinkingLevel, Provider, ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -27,6 +27,11 @@ export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
  * Image-request budgets at the dsh-llm-pi-ai defaults; the profile type made
  * them required in 0.1.1-rc.2. They bound requests to models whose catalog
  * entry declares `supportsImages`; text-only models never receive images.
+ *
+ * The values track `DEFAULT_MAX_REQUEST_IMAGE_BYTES` (20 MiB),
+ * `DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET` (2048²), and
+ * `DEFAULT_REQUEST_IMAGE_MAX_BYTES` (1 MiB) — unchanged between 0.1.1-rc.2 and
+ * 0.1.2-alpha.3, and still not re-exported at runtime, so they stay local.
  */
 const REQUEST_IMAGE_BUDGETS = {
   maxRequestImageBytes: 20_971_520,
@@ -75,6 +80,53 @@ export interface WorkBuddyAdapter {
   invalidate: () => void
 }
 
+/**
+ * The standard effort ladder for a model that declares no explicit
+ * `supportedEfforts`. WorkBuddy's older catalog rows carry only a default
+ * `effort` — no capability list — yet still accept the full standard effort
+ * ladder on the wire (verified live: `low`/`medium`/`high`/`xhigh`/`max` all
+ * return 200). `workbuddy2api` treats such rows as unknown and passes the
+ * effort through untouched. Offering the full ladder (minus `off`, which is
+ * only selectable when the model explicitly says thinking can be disabled)
+ * keeps the DSH picker aligned with what the upstream actually accepts.
+ */
+const UNSPECIFIED_EFFORTS: readonly ModelThinkingLevel[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/**
+ * Resolve a WorkBuddy model's reasoning capability into pi-ai's
+ * `thinkingLevelMap` (every level pinned to its wire spelling or `null` for
+ * unsupported), mirroring `dsh-llm-pi-ai`'s own `resolveModelReasoning`.
+ *
+ * Per-model handling:
+ * - A model that declares explicit `supportedEfforts` offers exactly those.
+ * - A model that declares none (the older `{effort, summary}` shape) is not
+ *   capability-restricted by the upstream, so it offers the full standard
+ *   ladder.
+ * - `off` is offered only when the model explicitly reports thinking can be
+ *   disabled (`canDisableThinking === true`); older rows leave it unsupported,
+ *   since the upstream rejects `off` on several of them.
+ */
+function reasoningFields(info: WorkBuddyModelInfo): { reasoning: boolean; thinkingLevelMap?: ThinkingLevelMap } {
+  const reasoning = info.reasoning
+  if (reasoning === undefined || reasoning.supports !== true) {
+    // Not a reasoning model: pi-ai reads a falsy `reasoning` as "off only".
+    return { reasoning: false }
+  }
+  const efforts = reasoning.supportedEfforts?.length !== undefined && reasoning.supportedEfforts.length > 0
+    ? reasoning.supportedEfforts
+    : UNSPECIFIED_EFFORTS
+  const map: Record<ModelThinkingLevel, string | null> = {
+    off: reasoning.canDisableThinking === true ? 'off' : null,
+    minimal: efforts.includes('minimal') ? 'minimal' : null,
+    low: efforts.includes('low') ? 'low' : null,
+    medium: efforts.includes('medium') ? 'medium' : null,
+    high: efforts.includes('high') ? 'high' : null,
+    xhigh: efforts.includes('xhigh') ? 'xhigh' : null,
+    max: efforts.includes('max') ? 'max' : null,
+  }
+  return { reasoning: true, thinkingLevelMap: map as ThinkingLevelMap }
+}
+
 /** Build one pi-ai model descriptor pointing at the loopback shim. */
 function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
   return {
@@ -84,6 +136,7 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
     provider: WORKBUDDY_PROVIDER,
     baseUrl,
     input: info.supportsImages === true ? ['text', 'image'] : ['text'],
+    ...reasoningFields(info),
     cost: NO_COST,
     contextWindow: info.contextWindow,
     maxTokens: info.maxTokens,

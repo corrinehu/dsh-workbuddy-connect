@@ -92,7 +92,61 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
       contextWindow: 168_000,
       maxTokens: 32_000,
       supportsImages: true,
+      reasoning: { supports: false, onlyReasoning: false, canDisableThinking: true },
+      billing: { free: false },
     })
+  })
+
+  it('parses reasoning and billing metadata from the upstream fields', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(modelsEnvelope([
+      {
+        id: 'm-reason',
+        name: 'Reasoner',
+        maxInputTokens: 100_000, maxOutputTokens: 32_000,
+        supportsReasoning: true,
+        reasoning: { supportedEfforts: ['low', 'high', 'xhigh'], defaultEffort: 'high', canDisableThinking: true },
+      },
+      {
+        id: 'm-free',
+        name: 'Freebie',
+        maxInputTokens: 100_000, maxOutputTokens: 32_000,
+        supportsReasoning: true,
+        onlyReasoning: true,
+        reasoning: { canDisableThinking: false },
+        credits: 'x0.00',
+        tags: ['craft', 'badge:限时免费:#FF0000'],
+      },
+      {
+        id: 'm-plain',
+        name: 'Plain',
+        maxInputTokens: 100_000, maxOutputTokens: 32_000,
+      },
+    ], ['m-reason', 'm-free', 'm-plain']))))
+
+    const models = await new WorkBuddyUpstreamClient().fetchModels(CREDENTIAL)
+    const byId = new Map(models.map(model => [model.id, model]))
+
+    expect(byId.get('m-reason')?.reasoning).toEqual({
+      supports: true,
+      onlyReasoning: false,
+      supportedEfforts: ['low', 'high', 'xhigh'],
+      defaultEffort: 'high',
+      canDisableThinking: true,
+    })
+    expect(byId.get('m-free')?.reasoning).toEqual({
+      supports: true,
+      onlyReasoning: true,
+      canDisableThinking: false,
+    })
+    expect(byId.get('m-free')?.billing).toEqual({ credits: 'x0.00', badges: ['限时免费'], free: true })
+    // A model with no reasoning or billing fields is explicitly non-reasoning
+    // (supports: false) and carries no free/badge facts.
+    expect(byId.get('m-plain')?.reasoning).toEqual({
+      supports: false,
+      onlyReasoning: false,
+      canDisableThinking: true,
+    })
+    expect(byId.get('m-plain')?.billing).toEqual({ free: false })
   })
 })
 

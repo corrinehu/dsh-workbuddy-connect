@@ -62,6 +62,10 @@ describe('WorkBuddy Host settings integration', () => {
     const models = await ctx.llm.listModels('workbuddy')
     expect(models.map(model => model.id)).toContain('auto')
     expect(models.map(model => model.id)).toContain('deepseek-v4-pro')
+    // The fallback catalog tracks the live `cli` roster, including the newer
+    // models the desktop app offers that older builds lacked.
+    expect(models.map(model => model.id)).toContain('hy4-preview')
+    expect(models.map(model => model.id)).toContain('glm-5.3')
 
     // Image modalities follow the per-model catalog flag (fallback list here):
     // image-capable entries expose `image`, glm-5.1 stays text-only.

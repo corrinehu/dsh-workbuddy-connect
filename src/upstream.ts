@@ -33,6 +33,46 @@ export interface WorkBuddyUpstreamModel {
    * admits an image the provider then rejects after the message is durable.
    */
   supportsImages: boolean
+  /**
+   * Reasoning metadata the upstream catalog declares per model. The wire
+   * effort values (`low`, `medium`, `high`, `xhigh`, `max`) map directly onto
+   * pi-ai's thinking levels, and the supported set decides which levels the
+   * DSH model selector offers.
+   */
+  reasoning?: WorkBuddyModelReasoning
+  /**
+   * Billing convenience metadata: the credits multiplier string the upstream
+   * reports (e.g. `"x0.00"` for free) and promotional badges like
+   * `badge:限时免费:#FF0000` or `badge:夜间折扣:#1E90FF`.
+   */
+  billing?: WorkBuddyModelBilling
+}
+
+/** Reasoning metadata the upstream catalog declares for one model. */
+export interface WorkBuddyModelReasoning {
+  /** Whether the model does any reasoning at all (upstream `supportsReasoning`). */
+  supports: boolean
+  /** Whether the model can only think (upstream `onlyReasoning`). */
+  onlyReasoning: boolean
+  /** Selectable effort values; absent means the model has no explicit set. */
+  supportedEfforts?: readonly WorkBuddyEffort[]
+  /** Default effort the upstream uses when none is chosen. */
+  defaultEffort?: WorkBuddyEffort
+  /** Whether thinking can be switched off; false means it is always on. */
+  canDisableThinking: boolean
+}
+
+/** The concrete effort spellings WorkBuddy exposes on the wire. */
+export type WorkBuddyEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** Billing convenience metadata reported for one model. */
+export interface WorkBuddyModelBilling {
+  /** Credits multiplier, e.g. `"x0.00"` (free) or `"x0.79"`. */
+  credits?: string
+  /** Promotional tags, e.g. `"限时免费"`, `"夜间折扣"`. */
+  badges?: readonly string[]
+  /** Whether the model is currently free (`x0.00` credits). */
+  free: boolean
 }
 
 /** One billing package and its remaining credit. */
@@ -76,6 +116,77 @@ const HARD_CREDIT_MARKERS: readonly string[] = [
   'not enough credit',
   '积分不足', '额度不足', '余额不足', '积分用完', '额度用尽', '没有积分',
 ]
+
+/** The concrete effort spellings WorkBuddy exposes on the wire. */
+const EFFORT_VALUES: readonly WorkBuddyEffort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/** Promotional badge keys the upstream tags carry, minus their color suffix. */
+const BADGE_PREFIX = 'badge:'
+
+/** Parse the upstream `reasoning` object into {@link WorkBuddyModelReasoning}. */
+function resolveUpstreamReasoning(wrapped: Record<string, unknown>): { reasoning: WorkBuddyModelReasoning } {
+  const supports = wrapped['supportsReasoning'] === true
+  const onlyReasoning = wrapped['onlyReasoning'] === true
+  const rawReasoning = wrapped['reasoning']
+  let supportedEfforts: WorkBuddyEffort[] | undefined
+  let defaultEffort: WorkBuddyEffort | undefined
+  let canDisableThinking = true
+  if (typeof rawReasoning === 'object' && rawReasoning !== null && !Array.isArray(rawReasoning)) {
+    const reasoning = rawReasoning as Record<string, unknown>
+    const rawEfforts = reasoning['supportedEfforts']
+    if (Array.isArray(rawEfforts)) {
+      const efforts = rawEfforts.filter((value): value is WorkBuddyEffort =>
+        typeof value === 'string' && (EFFORT_VALUES as readonly string[]).includes(value))
+      if (efforts.length > 0) supportedEfforts = efforts
+    }
+    if (typeof reasoning['defaultEffort'] === 'string'
+      && (EFFORT_VALUES as readonly string[]).includes(reasoning['defaultEffort'] as string)) {
+      defaultEffort = reasoning['defaultEffort'] as WorkBuddyEffort
+    } else if (typeof reasoning['effort'] === 'string'
+      && (EFFORT_VALUES as readonly string[]).includes(reasoning['effort'] as string)) {
+      defaultEffort = reasoning['effort'] as WorkBuddyEffort
+    }
+    // Only an explicit `canDisableThinking: true` offers "thinking off"; older
+    // rows omit the field and several of them reject `off` on the wire, so the
+    // conservative default is "cannot be disabled".
+    canDisableThinking = reasoning['canDisableThinking'] === true
+  }
+  return {
+    reasoning: {
+      supports,
+      onlyReasoning,
+      ...supportedEfforts === undefined ? {} : { supportedEfforts },
+      ...defaultEffort === undefined ? {} : { defaultEffort },
+      canDisableThinking,
+    },
+  }
+}
+
+/** Parse the upstream `tags` / `credits` fields into billing metadata. */
+function resolveUpstreamBilling(wrapped: Record<string, unknown>): { billing: WorkBuddyModelBilling } {
+  const rawCredits = wrapped['credits']
+  const credits = typeof rawCredits === 'string' && rawCredits.trim() !== '' ? rawCredits.trim() : undefined
+  const badges: string[] = []
+  const rawTags = wrapped['tags']
+  if (Array.isArray(rawTags)) {
+    for (const tag of rawTags) {
+      if (typeof tag !== 'string') continue
+      const lowered = tag.toLowerCase()
+      if (!lowered.startsWith(BADGE_PREFIX)) continue
+      const label = tag.slice(BADGE_PREFIX.length).split(':')[0] ?? tag.slice(BADGE_PREFIX.length)
+      if (label !== '') badges.push(label)
+    }
+  }
+  // A `x0.00` multiplier means the model is currently free.
+  const free = credits !== undefined && /^x?0\.0+$/u.test(credits)
+  return {
+    billing: {
+      ...credits === undefined ? {} : { credits },
+      ...badges.length === 0 ? {} : { badges },
+      free,
+    },
+  }
+}
 
 /** Session-invalidation markers that mean "sign in again in the WorkBuddy app". */
 const SESSION_DEAD_MARKERS: readonly string[] = ['Offline user session not found', '12153']
@@ -174,8 +285,15 @@ function billingHeaders(credential: WorkBuddyCredential): Record<string, string>
 
 /**
  * Normalize an OpenAI chat-completions body for the WorkBuddy upstream:
- * force `stream: true` (the upstream rejects non-streaming) and flatten
- * `tool_choice` (the upstream's field is a string; object forms return 400).
+ * force `stream: true` (the upstream rejects non-streaming), flatten
+ * `tool_choice` (the upstream's field is a string; object forms return 400),
+ * and rewrite `developer` messages as `system`.
+ *
+ * The `developer` rewrite is load-bearing: pi-ai emits the system prompt as
+ * `role: "developer"` (the OpenAI convention it adopted), but the WorkBuddy
+ * upstream rejects that role with HTTP 400 code 11128 ("Illegal API
+ * invocation from an unapproved channel"). Rewriting to `system` is the
+ * compatible spelling the upstream accepts.
  */
 export function prepareChatBody(source: string): string {
   let body: unknown
@@ -187,8 +305,20 @@ export function prepareChatBody(source: string): string {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return source
   const obj = body as Record<string, unknown>
   obj['stream'] = true
+  normalizeDeveloperRole(obj)
   normalizeToolChoice(obj)
   return JSON.stringify(obj)
+}
+
+/** Rewrite `role: "developer"` messages to `role: "system"` (upstream rejects developer). */
+function normalizeDeveloperRole(obj: Record<string, unknown>): void {
+  const messages = obj['messages']
+  if (!Array.isArray(messages)) return
+  for (const message of messages) {
+    if (typeof message !== 'object' || message === null || Array.isArray(message)) continue
+    const wrapped = message as Record<string, unknown>
+    if (wrapped['role'] === 'developer') wrapped['role'] = 'system'
+  }
 }
 
 /** Rewrite OpenAI `tool_choice` spellings into the upstream's string form. */
@@ -364,6 +494,8 @@ export class WorkBuddyUpstreamClient {
         contextWindow: input,
         maxTokens: output,
         supportsImages: wrapped['supportsImages'] === true && wrapped['disabledMultimodal'] !== true,
+        ...resolveUpstreamReasoning(wrapped),
+        ...resolveUpstreamBilling(wrapped),
       })
     }
     const models = cliIds
