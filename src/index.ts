@@ -7,8 +7,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { WorkBuddyCatalog } from './catalog.ts'
 import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
@@ -43,6 +43,9 @@ export {
   type UpstreamErrorKind,
   type WorkBuddyChatResult,
   type WorkBuddyCredits,
+  type WorkBuddyEffort,
+  type WorkBuddyModelBilling,
+  type WorkBuddyModelReasoning,
   type WorkBuddyRefreshOutcome,
   type WorkBuddyUpstreamModel,
 } from './upstream.ts'
@@ -62,8 +65,19 @@ export const name = 'llm-workbuddy'
 /** The model registry required before the provider can register. */
 export const inject = ['llm']
 
-/** Settings namespace reserved for the future configuration card. */
-export const WORKBUDDY_SETTINGS_NS = settingsNamespace('workbuddy')
+/**
+ * Settings namespace owning the configuration card.
+ *
+ * DSH 0.1.2 dropped the `settingsNamespace()` branding function: a namespace is
+ * now a nominal string, validated by the type system where it is used rather
+ * than at runtime by a function call. The brand is compile-time only, so this
+ * stays the plain string it always was — every comparison, descriptor lookup,
+ * and `dsh` config file still sees `'workbuddy'`. It is cast once here so the
+ * public constant carries the seam's type without pulling the brand helper
+ * into this package (upstream DSH plugins, `dsh-llm-pi-ai` included, pass
+ * their namespaces as plain string literals).
+ */
+export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 
 /** Plugin configuration. */
 export interface Config {
@@ -92,18 +106,26 @@ export function apply(ctx: Context, config: Config): void {
 
   // Same-origin status route backing the Plugin-configuration card; the
   // webServer service is optional (a headless profile serves no browser).
-  ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store, client }))
+  ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store, client, models: () => catalog.current() }))
 
   // The settings section is what makes the provider visible on the Models
   // settings page (settings.describe joins the provider directory), and it
   // keeps the configured auth-file path live across edits.
+  //
+  // DSH 0.1.2 moved the helper from a free function (`installSettingsSection`)
+  // onto the provider service (`settings.installSection`), so the wiring now
+  // has to wait for a settings service to exist — exactly what the inject
+  // below does. Without one the plugin still serves its models; it simply has
+  // no user-editable section, as before.
   let current = () => config
-  installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
-    setSource(source) { current = source },
-    onChange() {
-      const next = current().authFile
-      store.setDesktopPath(next)
-    },
+  ctx.inject(['settings'], settingsCtx => {
+    settingsCtx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+      setSource(source) { current = source },
+      onChange() {
+        const next = current().authFile
+        store.setDesktopPath(next)
+      },
+    })
   })
 
   let stopped = false
