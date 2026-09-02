@@ -19,6 +19,49 @@ interface WorkBuddyUpstreamModel {
    * admits an image the provider then rejects after the message is durable.
    */
   supportsImages: boolean;
+  /**
+   * Reasoning metadata the upstream catalog declares per model. The wire
+   * effort values (`low`, `medium`, `high`, `xhigh`, `max`) map directly onto
+   * pi-ai's thinking levels, and the supported set decides which levels the
+   * DSH model selector offers.
+   */
+  reasoning?: WorkBuddyModelReasoning;
+  /**
+   * Billing convenience metadata: the credits multiplier string the upstream
+   * reports (e.g. `"x0.00"` for free) and promotional badges like
+   * `badge:限时免费:#FF0000` or `badge:夜间折扣:#1E90FF`.
+   *
+   * The multiplier reaches the browser through the host LLM seam, which has no
+   * locale service, so {@link normalizeCredits} trims it to a
+   * language-neutral display form (`x0.79`) that reads the same in every UI
+   * language. The raw upstream string (which may spell `x0.79 credits`) stays
+   * on {@link WorkBuddyModelBilling.credits} for diagnostics.
+   */
+  billing?: WorkBuddyModelBilling;
+}
+/** Reasoning metadata the upstream catalog declares for one model. */
+interface WorkBuddyModelReasoning {
+  /** Whether the model does any reasoning at all (upstream `supportsReasoning`). */
+  supports: boolean;
+  /** Whether the model can only think (upstream `onlyReasoning`). */
+  onlyReasoning: boolean;
+  /** Selectable effort values; absent means the model has no explicit set. */
+  supportedEfforts?: readonly WorkBuddyEffort[];
+  /** Default effort the upstream uses when none is chosen. */
+  defaultEffort?: WorkBuddyEffort;
+  /** Whether thinking can be switched off; false means it is always on. */
+  canDisableThinking: boolean;
+}
+/** The concrete effort spellings WorkBuddy exposes on the wire. */
+type WorkBuddyEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+/** Billing convenience metadata reported for one model. */
+interface WorkBuddyModelBilling {
+  /** Credits multiplier, e.g. `"x0.00"` (free) or `"x0.79"`. */
+  credits?: string;
+  /** Promotional tags, e.g. `"限时免费"`, `"夜间折扣"`. */
+  badges?: readonly string[];
+  /** Whether the model is currently free (`x0.00` credits). */
+  free: boolean;
 }
 /** One billing package and its remaining credit. */
 interface WorkBuddyCreditAccount {
@@ -48,14 +91,36 @@ type WorkBuddyChatResult = {
   kind: UpstreamErrorKind;
   message: string;
 };
+/**
+ * Reduce an upstream credits string to its language-neutral display form.
+ *
+ * The host LLM seam carries this text to the browser, and the host has no
+ * locale service — whatever string is produced here is shown verbatim in every
+ * UI language. The upstream is inconsistent in a way that matters: some catalog
+ * rows report a bare multiplier (`x0.79`) and others append a unit word
+ * (`x0.79 credits`), and the unit word would pin the display to English.
+ * Dropping a trailing `credits` (case-insensitive, singular or plural) yields
+ * the one spelling that reads identically in every language.
+ *
+ * @param credits - raw upstream credits string, e.g. `"x0.79 credits"`.
+ * @returns the bare multiplier, or undefined when nothing displayable remains.
+ */
+declare function normalizeCredits(credits: string | undefined): string | undefined;
 /** Classify an upstream failure from its HTTP status and body excerpt. */
 declare function classifyUpstreamError(status: number, body: string): UpstreamErrorKind;
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */
 declare function regionOf(domain: string): WorkBuddyRegion;
 /**
  * Normalize an OpenAI chat-completions body for the WorkBuddy upstream:
- * force `stream: true` (the upstream rejects non-streaming) and flatten
- * `tool_choice` (the upstream's field is a string; object forms return 400).
+ * force `stream: true` (the upstream rejects non-streaming), flatten
+ * `tool_choice` (the upstream's field is a string; object forms return 400),
+ * and rewrite `developer` messages as `system`.
+ *
+ * The `developer` rewrite is load-bearing: pi-ai emits the system prompt as
+ * `role: "developer"` (the OpenAI convention it adopted), but the WorkBuddy
+ * upstream rejects that role with HTTP 400 code 11128 ("Illegal API
+ * invocation from an unapproved channel"). Rewriting to `system` is the
+ * compatible spelling the upstream accepts.
  */
 declare function prepareChatBody(source: string): string;
 /**
@@ -190,10 +255,16 @@ declare class WorkBuddyCredentialStore {
 /** One model entry the adapter exposes. */
 type WorkBuddyModelInfo = WorkBuddyUpstreamModel;
 /**
- * Static CLI models observed on the CN endpoint (2026-08-17; image flags
- * re-verified against the live catalog 2026-08-29). The upstream refresh
- * replaces this list at startup; it exists so the provider registers with a
- * usable catalog even while the first fetch is in flight or offline.
+ * Static CLI models observed on the CN endpoint (re-verified against the live
+ * catalog 2026-09-01, including the thinking-effort and billing metadata). The
+ * upstream refresh replaces this list at startup; it exists so the provider
+ * registers with a usable catalog even while the first fetch is in flight or
+ * offline.
+ *
+ * The list tracks the `cli` agent's model roster exactly: the 15 models the
+ * desktop CLI offers. Reasoning metadata is taken verbatim from the live
+ * endpoint — each model's supported effort set and whether thinking can be
+ * disabled — and the `free` flag follows the upstream `x0.00` credits marker.
  */
 declare const FALLBACK_WORKBUDDY_MODELS: readonly WorkBuddyModelInfo[];
 /** Mutable catalog shared by the shim's `/v1/models` and the adapter. */
@@ -352,4 +423,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyHostHeartbeat, type WorkBuddyModelInfo, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };
+export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, normalizeCredits, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };

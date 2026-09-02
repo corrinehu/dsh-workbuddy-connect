@@ -95,7 +95,10 @@ describe('WorkBuddy shim', () => {
     const ids = body.data.map(model => model.id)
     expect(ids).toContain('auto')
     expect(ids).toContain('deepseek-v4-pro')
-    expect(ids.length).toBe(11)
+    // The fallback roster tracks the live `cli` agent's 15 models.
+    expect(ids.length).toBe(15)
+    expect(ids).toContain('hy4-preview')
+    expect(ids).toContain('glm-5.3')
   })
 
   it('streams a successful chat completion and normalizes the body', async () => {
@@ -125,6 +128,29 @@ describe('WorkBuddy shim', () => {
     const forwarded = JSON.parse(harness.upstreamBodies[0] ?? '') as Record<string, unknown>
     expect(forwarded['stream']).toBe(true)
     expect(forwarded['tool_choice']).toBe('auto')
+  })
+
+  it('forwards the reasoning_effort a model picker selection sends', async () => {
+    const harness = await startShim(() => ({
+      ok: true,
+      response: new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    }))
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({
+        model: 'glm-5.3',
+        messages: [{ role: 'user', content: 'hi' }],
+        reasoning_effort: 'xhigh',
+      }),
+    })
+    expect(response.status).toBe(200)
+    const forwarded = JSON.parse(harness.upstreamBodies[0] ?? '') as Record<string, unknown>
+    expect(forwarded['reasoning_effort']).toBe('xhigh')
+    expect(forwarded['stream']).toBe(true)
   })
 
   it('maps an upstream credit failure onto HTTP 402', async () => {
