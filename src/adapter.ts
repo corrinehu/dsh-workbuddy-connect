@@ -108,30 +108,23 @@ export interface WorkBuddyAdapter {
 }
 
 /**
- * The standard effort ladder for a model that declares no explicit
- * `supportedEfforts`. WorkBuddy's older catalog rows carry only a default
- * `effort` — no capability list — yet still accept the full standard effort
- * ladder on the wire (verified live: `low`/`medium`/`high`/`xhigh`/`max` all
- * return 200). `workbuddy2api` treats such rows as unknown and passes the
- * effort through untouched. Offering the full ladder (minus `off`, which is
- * only selectable when the model explicitly says thinking can be disabled)
- * keeps the DSH picker aligned with what the upstream actually accepts.
- */
-const UNSPECIFIED_EFFORTS: readonly ModelThinkingLevel[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-
-/**
  * Resolve a WorkBuddy model's reasoning capability into pi-ai's
  * `thinkingLevelMap` (every level pinned to its wire spelling or `null` for
  * unsupported), mirroring `dsh-llm-pi-ai`'s own `resolveModelReasoning`.
  *
- * Per-model handling:
- * - A model that declares explicit `supportedEfforts` offers exactly those.
- * - A model that declares none (the older `{effort, summary}` shape) is not
- *   capability-restricted by the upstream, so it offers the full standard
- *   ladder.
- * - `off` is offered only when the model explicitly reports thinking can be
- *   disabled (`canDisableThinking === true`); older rows leave it unsupported,
- *   since the upstream rejects `off` on several of them.
+ * Declared sets only: a thinking control is offered exactly when the upstream
+ * catalog declares a `supportedEfforts` list, and it offers exactly the
+ * declared values. Rows without a list (the older `{effort, summary}` shape)
+ * get no control at all — their selectable set is client-side knowledge the
+ * catalog does not carry (the desktop app differs per model there: GLM-5.2
+ * gets a thinking control while MiniMax-M3 and Kimi-K2.6 do not, though their
+ * catalog rows are identical), and another implementation against the same
+ * upstream (workbuddy2api) gates on the declared set and downgrades
+ * out-of-set values rather than passing them through, so sending an
+ * undeclared value risks a 400. Such models never carry `reasoning_effort`
+ * on the wire; the upstream applies its own default.
+ * `off` is offered only when the model explicitly reports thinking can be
+ * disabled (`canDisableThinking === true`).
  */
 function reasoningFields(info: WorkBuddyModelInfo): { reasoning: boolean; thinkingLevelMap?: ThinkingLevelMap } {
   const reasoning = info.reasoning
@@ -139,12 +132,17 @@ function reasoningFields(info: WorkBuddyModelInfo): { reasoning: boolean; thinki
     // Not a reasoning model: pi-ai reads a falsy `reasoning` as "off only".
     return { reasoning: false }
   }
-  const efforts = reasoning.supportedEfforts?.length !== undefined && reasoning.supportedEfforts.length > 0
-    ? reasoning.supportedEfforts
-    : UNSPECIFIED_EFFORTS
+  const efforts = reasoning.supportedEfforts
+  if (efforts === undefined || efforts.length === 0) {
+    // No declared set: no thinking control, no `reasoning_effort` on the wire
+    // — identical to the pre-#9 behavior for these rows.
+    return { reasoning: false }
+  }
   const map: Record<ModelThinkingLevel, string | null> = {
     off: reasoning.canDisableThinking === true ? 'off' : null,
-    minimal: efforts.includes('minimal') ? 'minimal' : null,
+    // `minimal` is not in the upstream effort vocabulary (EFFORT_VALUES), so
+    // no declared set can ever contain it.
+    minimal: null,
     low: efforts.includes('low') ? 'low' : null,
     medium: efforts.includes('medium') ? 'medium' : null,
     high: efforts.includes('high') ? 'high' : null,

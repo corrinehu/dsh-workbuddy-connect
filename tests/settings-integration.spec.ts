@@ -77,6 +77,16 @@ describe('WorkBuddy Host settings integration', () => {
     expect(byId.get('auto')?.name).toBe('Auto')
     expect(byId.get('auto')?.description).toBeUndefined()
 
+    // Thinking controls are declared-set-only: models whose upstream row
+    // carries `supportedEfforts` expose exactly those efforts; rows without a
+    // list (the older `{effort, summary}` shape) expose no control at all, so
+    // requests never carry `reasoning_effort` for them and the upstream
+    // default applies — matching the desktop app's own per-model gating.
+    const autoResolved = await ctx.llm.resolveModelInfo('workbuddy', 'auto')
+    expect(autoResolved.reasoning).toBeUndefined()
+    const flashResolved = await ctx.llm.resolveModelInfo('workbuddy', 'glm-5.3-flash')
+    expect(flashResolved.reasoning?.efforts.map(effort => effort.id).sort()).toEqual(['high', 'low', 'max', 'off'])
+
     // Image modalities follow the per-model catalog flag (fallback list here):
     // image-capable entries expose `image`, glm-5.1 stays text-only.
     const modalities = new Map(models.map(model => [model.id, model.inputModalities]))
