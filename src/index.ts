@@ -37,12 +37,16 @@ export {
 } from './auth.ts'
 export {
   classifyUpstreamError,
+  normalizeCredits,
   prepareChatBody,
   regionOf,
   WorkBuddyUpstreamClient,
   type UpstreamErrorKind,
   type WorkBuddyChatResult,
   type WorkBuddyCredits,
+  type WorkBuddyEffort,
+  type WorkBuddyModelBilling,
+  type WorkBuddyModelReasoning,
   type WorkBuddyRefreshOutcome,
   type WorkBuddyUpstreamModel,
 } from './upstream.ts'
@@ -92,7 +96,7 @@ export function apply(ctx: Context, config: Config): void {
 
   // Same-origin status route backing the Plugin-configuration card; the
   // webServer service is optional (a headless profile serves no browser).
-  ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store, client }))
+  ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store, client, models: () => catalog.current() }))
 
   // The settings section is what makes the provider visible on the Models
   // settings page (settings.describe joins the provider directory), and it

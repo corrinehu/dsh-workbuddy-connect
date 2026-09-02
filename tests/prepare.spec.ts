@@ -35,6 +35,30 @@ describe('prepareChatBody', () => {
     const body = JSON.parse(prepareChatBody(JSON.stringify({ tool_choice: { type: 'weird' } })))
     expect('tool_choice' in body).toBe(false)
   })
+
+  it('preserves the reasoning_effort the model picker selects', () => {
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'glm-5.3',
+      messages: [{ role: 'user', content: 'hi' }],
+      reasoning_effort: 'xhigh',
+    })))
+    expect(body['reasoning_effort']).toBe('xhigh')
+    expect(body['stream']).toBe(true)
+  })
+
+  it('rewrites developer messages to system (upstream rejects developer)', () => {
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [
+        { role: 'developer', content: 'system prompt' },
+        { role: 'user', content: 'hi' },
+      ],
+      reasoning_effort: 'max',
+    })))
+    const roles = body['messages'].map((message: { role: string }) => message.role)
+    expect(roles).toEqual(['system', 'user'])
+    expect(body['reasoning_effort']).toBe('max')
+  })
 })
 
 describe('classifyUpstreamError', () => {

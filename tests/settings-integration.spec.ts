@@ -62,6 +62,20 @@ describe('WorkBuddy Host settings integration', () => {
     const models = await ctx.llm.listModels('workbuddy')
     expect(models.map(model => model.id)).toContain('auto')
     expect(models.map(model => model.id)).toContain('deepseek-v4-pro')
+    // The fallback catalog tracks the live `cli` roster, including the newer
+    // models the desktop app offers that older builds lacked.
+    expect(models.map(model => model.id)).toContain('hy4-preview')
+    expect(models.map(model => model.id)).toContain('glm-5.3')
+
+    // The billing rate rides the display name (and the advisory description)
+    // so both the /model popup and the composer seat show it; the id and the
+    // request path are untouched by this display-only decoration.
+    const byId = new Map(models.map(model => [model.id, model]))
+    expect(byId.get('glm-5.2')?.name).toBe('GLM-5.2 · x0.79')
+    expect(byId.get('glm-5.2')?.description).toBe('x0.79')
+    expect(byId.get('glm-5.1')?.name).toBe('GLM-5.1 · x0.79')
+    expect(byId.get('auto')?.name).toBe('Auto')
+    expect(byId.get('auto')?.description).toBeUndefined()
 
     // Image modalities follow the per-model catalog flag (fallback list here):
     // image-capable entries expose `image`, glm-5.1 stays text-only.
