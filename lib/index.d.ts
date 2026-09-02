@@ -31,6 +31,12 @@ interface WorkBuddyUpstreamModel {
    * Billing convenience metadata: the credits multiplier string the upstream
    * reports (e.g. `"x0.00"` for free) and promotional badges like
    * `badge:限时免费:#FF0000` or `badge:夜间折扣:#1E90FF`.
+   *
+   * The multiplier reaches the browser through the host LLM seam, which has no
+   * locale service, so {@link normalizeCredits} trims it to a
+   * language-neutral display form (`x0.79`) that reads the same in every UI
+   * language. The raw upstream string (which may spell `x0.79 credits`) stays
+   * on {@link WorkBuddyModelBilling.credits} for diagnostics.
    */
   billing?: WorkBuddyModelBilling;
 }
@@ -86,6 +92,21 @@ type WorkBuddyChatResult = {
   kind: UpstreamErrorKind;
   message: string;
 };
+/**
+ * Reduce an upstream credits string to its language-neutral display form.
+ *
+ * The host LLM seam carries this text to the browser, and the host has no
+ * locale service — whatever string is produced here is shown verbatim in every
+ * UI language. The upstream is inconsistent in a way that matters: some catalog
+ * rows report a bare multiplier (`x0.79`) and others append a unit word
+ * (`x0.79 credits`), and the unit word would pin the display to English.
+ * Dropping a trailing `credits` (case-insensitive, singular or plural) yields
+ * the one spelling that reads identically in every language.
+ *
+ * @param credits - raw upstream credits string, e.g. `"x0.79 credits"`.
+ * @returns the bare multiplier, or undefined when nothing displayable remains.
+ */
+declare function normalizeCredits(credits: string | undefined): string | undefined;
 /** Classify an upstream failure from its HTTP status and body excerpt. */
 declare function classifyUpstreamError(status: number, body: string): UpstreamErrorKind;
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */
@@ -414,4 +435,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };
+export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, normalizeCredits, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };

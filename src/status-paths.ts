@@ -24,6 +24,12 @@ export interface WorkBuddyWebModelBadge {
   free?: boolean
   /** Promotional badges, e.g. `限时免费`, `夜间折扣`. */
   badges?: readonly string[]
+  /**
+   * Credits multiplier in display form, e.g. `x0.79`. Unlike the model
+   * picker's copy, the card renders through the browser locale, so this value
+   * may be interpolated into a localized sentence rather than shown bare.
+   */
+  credits?: string
 }
 
 /** The JSON document the plugin card renders. */

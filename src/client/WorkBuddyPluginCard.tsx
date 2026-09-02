@@ -5,7 +5,7 @@ import type { CSSProperties } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
-import type { WorkBuddyWebStatus } from '../status-paths.ts'
+import type { WorkBuddyWebModelBadge, WorkBuddyWebStatus } from '../status-paths.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -57,6 +57,8 @@ const quotaGroupStyle: CSSProperties = { display: 'flex', flexDirection: 'column
 const quotaTitleStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '20px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
 const quotaLabelStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' }
 const modelBadgeStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }
+const modelOfferStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
+const modelRateStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
 const modelBadgeChipStyle: CSSProperties = {
   padding: '1px 8px', borderRadius: 999, fontSize: 11, lineHeight: '18px',
   background: 'var(--dsw-alias-state-success-subtle, rgba(34, 160, 107, 0.12))',
@@ -124,6 +126,33 @@ function CreditBar({ label, remain, size, t }: {
         <div style={progressFillStyle(percent)} />
       </div>
       <p style={bodyStyle}>{detail}</p>
+    </div>
+  )
+}
+
+/**
+ * One model offer row: name, promotional badges, and the billing rate.
+ *
+ * The rate sits under the name rather than beside it because the row already
+ * spends its horizontal budget on badges; stacking keeps long model names and
+ * several badges from squeezing the rate into an ellipsis.
+ */
+function ModelOfferRow({ model, t }: {
+  model: WorkBuddyWebModelBadge
+  t: WorkBuddyPluginCardInjected['t']
+}): React.ReactNode {
+  return (
+    <div style={modelOfferStyle}>
+      <div style={quotaLabelStyle}>
+        <span>{model.name}</span>
+        <span style={modelBadgeStyle}>
+          {model.badges?.map(badge => (
+            <span key={badge} style={modelBadgeChipStyle}>{modelBadgeLabel(badge, t)}</span>
+          ))}
+          {model.free === true ? <span style={modelBadgeChipStyle}>{t('freeModel')}</span> : null}
+        </span>
+      </div>
+      {model.credits === undefined ? null : <span style={modelRateStyle}>{t('rate', { rate: model.credits })}</span>}
     </div>
   )
 }
@@ -246,17 +275,7 @@ export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
                   {status.models === undefined || status.models.length === 0 ? null : (
                     <div style={quotaListStyle}>
                       <h3 style={quotaTitleStyle}>{t('modelsHeading')}</h3>
-                      {status.models.map(model => (
-                        <div key={model.id} style={quotaLabelStyle}>
-                          <span>{model.name}</span>
-                          <span style={modelBadgeStyle}>
-                            {model.badges?.map(badge => (
-                              <span key={badge} style={modelBadgeChipStyle}>{modelBadgeLabel(badge, t)}</span>
-                            ))}
-                            {model.free === true ? <span style={modelBadgeChipStyle}>{t('freeModel')}</span> : null}
-                          </span>
-                        </div>
-                      ))}
+                      {status.models.map(model => <ModelOfferRow key={model.id} model={model} t={t} />)}
                     </div>
                   )}
                 </>

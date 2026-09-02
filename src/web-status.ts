@@ -11,9 +11,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
+import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebStatus } from './status-paths.ts'
+import type { WorkBuddyWebModelBadge, WorkBuddyWebStatus } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -70,16 +71,22 @@ export async function workBuddyWebStatus(
     ...authStatus.expiresAtMs === undefined ? {} : { expiresAt: authStatus.expiresAtMs },
   }
   // Model billing facts ride the signed-in document so the card can show which
-  // models are free or on a promo, without touching the Models picker.
+  // models are free or on a promo, without touching the Models picker. The
+  // rate is normalized here (not in the card) so both halves agree on one
+  // display form; the card additionally localizes it.
   const models = deps.models()
-  const modelsField = models
+  const modelsField: readonly WorkBuddyWebModelBadge[] = models
     .filter(model => model.billing?.free === true || (model.billing?.badges?.length ?? 0) > 0)
-    .map(model => ({
-      id: model.id,
-      name: model.name,
-      ...model.billing?.free === true ? { free: true as const } : {},
-      ...model.billing?.badges !== undefined && model.billing.badges.length > 0 ? { badges: model.billing.badges } : {},
-    }))
+    .map(model => {
+      const rate = normalizeCredits(model.billing?.credits)
+      return {
+        id: model.id,
+        name: model.name,
+        ...model.billing?.free === true ? { free: true as const } : {},
+        ...model.billing?.badges !== undefined && model.billing.badges.length > 0 ? { badges: model.billing.badges } : {},
+        ...rate === undefined ? {} : { credits: rate },
+      }
+    })
   const statusWithModels: WorkBuddyWebStatus = modelsField.length > 0
     ? { ...status, models: modelsField }
     : status

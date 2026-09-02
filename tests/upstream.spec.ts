@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkBuddyCredential } from '../src/auth.ts'
-import { WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import { normalizeCredits, WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 /**
  * Offline unit tests for WorkBuddyUpstreamClient, mocking the global `fetch`
@@ -258,5 +258,30 @@ describe('WorkBuddyUpstreamClient.fetchCredits', () => {
     vi.stubGlobal('fetch', vi.fn(async () => fakeResponse('not json')))
 
     await expect(new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)).rejects.toThrow(/non-JSON/)
+  })
+})
+
+describe('normalizeCredits', () => {
+  it('keeps a bare multiplier untouched', () => {
+    expect(normalizeCredits('x0.79')).toBe('x0.79')
+    expect(normalizeCredits('x0.00')).toBe('x0.00')
+  })
+
+  it('strips a trailing credits unit word', () => {
+    expect(normalizeCredits('x0.79 credits')).toBe('x0.79')
+    expect(normalizeCredits('x1.62 credits')).toBe('x1.62')
+    expect(normalizeCredits('x0.79 CREDITS')).toBe('x0.79')
+    expect(normalizeCredits('x0.79 credit')).toBe('x0.79')
+  })
+
+  it('trims surrounding whitespace', () => {
+    expect(normalizeCredits('  x0.79 credits  ')).toBe('x0.79')
+  })
+
+  it('returns undefined for absent or empty values', () => {
+    expect(normalizeCredits(undefined)).toBeUndefined()
+    expect(normalizeCredits('')).toBeUndefined()
+    expect(normalizeCredits('   ')).toBeUndefined()
+    expect(normalizeCredits('credits')).toBeUndefined()
   })
 })

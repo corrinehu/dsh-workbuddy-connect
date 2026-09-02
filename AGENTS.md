@@ -6,6 +6,8 @@
 
 ## 最近发布
 
+- **v0.3.0-alpha.0（2026-09-02，适配 dsh alpha 的版本走 alpha tag；首个 npm alpha 发布）**：模型选择列表里每个模型名直接带积分倍率（`GLM-5.2 · x0.79`），`/model` 弹窗与 composer 下拉都可见；设置卡片「模型优惠」补上倍率行。实现要点：① 新增 `normalizeCredits`（`src/upstream.ts`）把上游 `x0.79 credits` 归一成语言无关的 `x0.79`——host 侧 LLM seam 无 locale 服务，任何文案都会原样进浏览器，所以必须去掉 `credits` 单位词；② `src/adapter.ts` 子类化 `PiAiAdapter`（`WorkBuddyPiAiAdapter`）覆写 `listModels` / `resolveModel`，把费率拼进 `name`（分隔符用 ` · `，模型名本身含连字符）并同时放进 `description`——因为 DSH 的 `/model` 弹窗渲染 `description` 而 composer 的 ModelSelect 只渲染 `name`，两者都要覆盖；③ 费率只改显示字段：pi-ai 请求体用 `model.id`（openai-completions.js 两处 `model: model.id`），选择回传也是 id，`dsh-llm` 对 name 只校验非空字符串，已确认无按 name 的查找/比对逻辑；④ 卡片侧走浏览器 locale（`rate` 键：`{rate} 积分/次` / `{rate} credits per message`），host 只传归一化后的 `credits` 字段。版本管理：v0.3.0 提交（0351eca，适配 dsh 0.1.2-alpha.3）本身即 alpha 线起点但从未发布 npm，故首个 npm alpha 发布用 `0.3.0-alpha.0`（对齐 v0.3.0 语义 + `-alpha.N` 后缀），统一 `npm publish --tag alpha`，与 `latest` 稳定线隔离。
+
 - **v0.3.0（适配 dsh 0.1.2-alpha.3 + 思考强度/限时免费）**：依赖整体升级——dsh 系子包 `^0.1.2-alpha.3`、cordis `^4.0.2`、schemastery `^3.18.2`、pi-ai `^0.84.2`。跟随上游三处 API 变化：① `@deepseek-ai/dsh-client-runtime` 移除，`slots` 服务迁到 `@deepseek-ai/dsh-client-ui-renderer`，客户端 `ClientContext` 直接改用 cordis `Context`（`dsh.client.inject` 相应精简）；② `dsh-settings` 的 `settingsNamespace()` / `installSettingsSection()` 移除，改为 `ctx.settings.installSection(...)`；③ pi-ai `Model` 新增必填 `reasoning` 字段。功能增强：解析上游 `reasoning` / `credits` / `tags`，把每个模型的 `supportedEfforts` 映射成 pi-ai 思考等级（请求以 `reasoning_effort` 转发）；静态兜底目录同步到真实 cli 15 个模型；状态卡片标注免费/限时免费/夜间折扣模型。
 
 - **思考强度按模型分别处理（2026-09-01，随 v0.3.0 一起）**：WorkBuddy 上游 `reasoning` 对象有两种形态——新形态带显式 `supportedEfforts` + `canDisableThinking`（hy4-preview/hy3-x/glm-5.3/glm-5.3-flash），旧形态只有 `{effort, summary}`（auto/hy3/glm-5.2 等绝大多数）。修正确认：① 旧形态模型上游**接受完整档位集**（实测 low/medium/high/xhigh/max 全 200），并非只支持默认档，所以 DSH 里应显示完整档位（`minimal/low/medium/high/xhigh/max`），而不是只剩 Off；② `off` 仅当显式 `canDisableThinking:true` 才提供（旧形态大多拒绝 off，实测 auto off=400）；③ 参考 workbuddy2api 的 `normalizeReasoningEffort`（按模型 supportedEfforts 降级、无 supportedEfforts 透传），与上游行为对齐。参考见 `workbuddy2api/internal/upstream/payload.go`。
@@ -19,3 +21,5 @@
 ## 发布规矩（同工作区根 AGENTS.md）
 
 未经明确指令不得 `npm publish` / 打 release tag；发布前 `pnpm run check` 全过，顺序固定：**先升版本号，再 check/构建，最后发布**。
+
+**alpha 版本管理**：适配 dsh alpha 系列的发布，版本号统一带 `-alpha.N` 后缀（首个为 `0.3.0-alpha.0`——v0.3.0 提交本身即 alpha 线起点，npm 上从它对齐编号），发布命令固定为 `npm publish --tag alpha`，绝不把 alpha 发布到 `latest` dist-tag。这样 `dsh plugin add dsh-workbuddy-connect`（默认 `latest`）拿到稳定线，而适配 alpha dsh 的安装用 `dsh plugin add dsh-workbuddy-connect@alpha` 或显式 `@0.3.0-alpha.0`。只有适配正式版 dsh 的发布才用不带后缀的版本号 + `latest`。

@@ -24,6 +24,7 @@ export const en = {
   freeModel: 'Free',
   badgeLimitedFree: 'Limited-time free',
   badgeNightDiscount: 'Night discount',
+  rate: '{rate} credits per message',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -52,4 +53,5 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   freeModel: '免费',
   badgeLimitedFree: '限时免费',
   badgeNightDiscount: '夜间折扣',
+  rate: '{rate} 积分/次',
 }

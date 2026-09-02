@@ -24,6 +24,9 @@
 - **限时免费一目了然**：模型选择器旁的状态卡片会标注当前免费 / 限时免费 / 夜间折扣的模型（跟随上游 `credits` 与 `tags` 实时更新）。
 
 
+- **费率比例直接可见**：模型选择列表里每个模型名后直接显示积分倍率（如 `GLM-5.2 · x0.79`、`Hy3 · x0.00`），`/model` 弹窗与 composer 下拉都能看到；设置卡片里也补充了倍率说明。倍率只影响显示，发送请求仍使用模型 id。
+
+
 - **信息查看**：设置 → 插件 → DSH WorkBuddy Connect 卡片
 
 
@@ -48,6 +51,12 @@ dsh web
 dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
 dsh web
 ```
+
+> 版本线：适配 dsh alpha 系列的版本带 `-alpha.N` 后缀并以 `alpha` dist-tag 发布（不占 `latest`）。默认安装拿到稳定线；使用 alpha dsh 时请装 alpha 线：
+>
+> ```sh
+> dsh plugin --profile web add dsh-workbuddy-connect@alpha
+> ```
 
 ```sh
 # Desktop（DSH Desktop 桌面版）

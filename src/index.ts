@@ -37,6 +37,7 @@ export {
 } from './auth.ts'
 export {
   classifyUpstreamError,
+  normalizeCredits,
   prepareChatBody,
   regionOf,
   WorkBuddyUpstreamClient,

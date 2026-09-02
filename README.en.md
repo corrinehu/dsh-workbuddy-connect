@@ -16,6 +16,8 @@ Brings every model in the WorkBuddy desktop app (GLM-5.3, GLM-5.2, DeepSeek-V4-P
 
 - **Limited-time free at a glance**: the status card marks models that are currently free / limited-time free / on a night discount (following the upstream `credits` and `tags` live).
 
+- **Rate ratio at a glance**: every model in the selection list carries its credits multiplier on the name (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`), in both the `/model` popup and the composer seat; the status card adds a localized rate line too. The rate is display-only — requests always use the model id.
+
 - **Info at a glance**: Settings → Plugins → DSH WorkBuddy Connect card
 
 ![Settings card showing the plugin](assets/2.png)
@@ -39,6 +41,12 @@ dsh web
 dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
 dsh web
 ```
+
+> Release lines: builds that track the dsh alpha series carry an `-alpha.N` suffix and are published under the `alpha` dist-tag (never `latest`). The default install resolves the stable line; when you run an alpha dsh, install the alpha line instead:
+>
+> ```sh
+> dsh plugin --profile web add dsh-workbuddy-connect@alpha
+> ```
 
 ```sh
 # Desktop (the DSH Desktop app)
