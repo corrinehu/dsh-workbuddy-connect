@@ -76,7 +76,9 @@ describe('WorkBuddy Host settings integration', () => {
     expect(byId.get('auto')?.name).toBe('Auto')
     // The rate lives on the name only: the /model popup renders name AND
     // description, so a description copy would display it twice there.
-    expect(byId.get('glm-5.2')?.description).toBeUndefined()
+    // description instead carries the declared promo badges, when present.
+    expect(byId.get('glm-5.2')?.description).toBe('夜间折扣')
+    expect(byId.get('glm-5.3')?.description).toBeUndefined()
 
     // Thinking controls are declared-set-only: models whose upstream row
     // carries `supportedEfforts` expose exactly those efforts; rows without a

@@ -86,6 +86,18 @@ const RATE_SEPARATOR = ' · '
  * `dsh-llm` validates `name` as a non-empty string without comparing its
  * contents. Nothing in the host resolves a model *by* name.
  */
+
+/**
+ * The declared promo badges (`限时免费`, `夜间折扣`) as a display string for the
+ * `/model` popup's description slot, which the name does not cover. The
+ * labels are the upstream's own spellings and the host seam has no locale
+ * service, so non-Chinese UIs see them verbatim — accepted until the picker
+ * grows a localized badge slot.
+ */
+function promoDescription(info: WorkBuddyModelInfo): string | undefined {
+  const badges = info.billing?.badges
+  return badges === undefined || badges.length === 0 ? undefined : badges.join(' · ')
+}
 function withRate(name: string, info: WorkBuddyModelInfo): string {
   const rate = normalizeCredits(info.billing?.credits)
   return rate === undefined ? name : `${name}${RATE_SEPARATOR}${rate}`
@@ -271,7 +283,8 @@ class WorkBuddyPiAiAdapter extends PiAiAdapter {
     return models.map(model => {
       const info = this.infoFor(model.id)
       if (info === undefined) return model
-      return { ...model, name: withRate(model.name, info) }
+      const promo = promoDescription(info)
+      return { ...model, name: withRate(model.name, info), ...promo === undefined ? {} : { description: promo } }
     })
   }
 
@@ -279,6 +292,7 @@ class WorkBuddyPiAiAdapter extends PiAiAdapter {
     const resolved = await super.resolveModel(provider, model, signal)
     const info = this.infoFor(model)
     if (info === undefined) return resolved
-    return { ...resolved, name: withRate(resolved.name, info) }
+    const promo = promoDescription(info)
+    return { ...resolved, name: withRate(resolved.name, info), ...promo === undefined ? {} : { description: promo } }
   }
 }
