@@ -72,10 +72,11 @@ describe('WorkBuddy Host settings integration', () => {
     // request path are untouched by this display-only decoration.
     const byId = new Map(models.map(model => [model.id, model]))
     expect(byId.get('glm-5.2')?.name).toBe('GLM-5.2 · x0.79')
-    expect(byId.get('glm-5.2')?.description).toBe('x0.79')
     expect(byId.get('glm-5.1')?.name).toBe('GLM-5.1 · x0.79')
     expect(byId.get('auto')?.name).toBe('Auto')
-    expect(byId.get('auto')?.description).toBeUndefined()
+    // The rate lives on the name only: the /model popup renders name AND
+    // description, so a description copy would display it twice there.
+    expect(byId.get('glm-5.2')?.description).toBeUndefined()
 
     // Thinking controls are declared-set-only: models whose upstream row
     // carries `supportedEfforts` expose exactly those efforts; rows without a

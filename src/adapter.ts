@@ -74,11 +74,11 @@ const RATE_SEPARATOR = ' · '
 /**
  * Append the billing rate to one model's display name.
  *
- * The rate rides the *name* rather than only `description` because the DSH
- * model surfaces disagree about which field they render: the `/model` popup
- * shows `description` but the composer's model seat (`ModelSelect`) renders
- * `model.name` only and never reads `description`. Carrying the rate on the
- * name makes it visible in both.
+ * The rate rides the *name* alone because the DSH model surfaces disagree
+ * about which field they render: the composer's model seat (`ModelSelect`)
+ * renders `model.name` only and never reads `description`, while the `/model`
+ * popup renders BOTH — a rate in `description` would show it twice there, so
+ * `description` stays untouched.
  *
  * This is display-only and cannot affect routing: the wire request is built
  * from `model.id` (pi-ai's completions API sets `model: model.id`), the
@@ -271,12 +271,7 @@ class WorkBuddyPiAiAdapter extends PiAiAdapter {
     return models.map(model => {
       const info = this.infoFor(model.id)
       if (info === undefined) return model
-      const rate = normalizeCredits(info.billing?.credits)
-      return {
-        ...model,
-        name: withRate(model.name, info),
-        ...rate === undefined ? {} : { description: rate },
-      }
+      return { ...model, name: withRate(model.name, info) }
     })
   }
 
@@ -284,11 +279,6 @@ class WorkBuddyPiAiAdapter extends PiAiAdapter {
     const resolved = await super.resolveModel(provider, model, signal)
     const info = this.infoFor(model)
     if (info === undefined) return resolved
-    const rate = normalizeCredits(info.billing?.credits)
-    return {
-      ...resolved,
-      name: withRate(resolved.name, info),
-      ...rate === undefined ? {} : { description: rate },
-    }
+    return { ...resolved, name: withRate(resolved.name, info) }
   }
 }
