@@ -3,8 +3,20 @@
 ## 待办
 
 - PR #4（WSL 凭据发现）已合并进 v0.2.4：等作者 CallMeSoul 基于 npm 包回归验证（PR 评论里已请求）。
+- 0.3.0 发布时：`adapt/dsh-0.1.2` 分支合回 main（**push 前必须请用户批准**），并把本地 main 上未推的 db412fd（push 规矩）一并带上。
+- TUI 验证：等 `@deepseek-harness-tui/dsh-tui` 发布 0.1.2 适配版（修复已合并其仓库 #703，未发版）后，tui profile 验证 0.3.0。
+- web profile 还原：其他第三方插件适配 0.1.2 后，从 `package.json.bak-bundles-full` 恢复完整 bundle 列表。
+- 桌面 App 本机升级 2.0.5（已适配 0.1.2-rc.1；升级会使 `dsh-desktop-patches` 补丁失效，需重跑脚本——见工作区根 AGENTS.md）。
 
 ## 最近发布
+
+- **0.3.0 测试与本地环境（2026-09-04，未发布）**：① **git 状态**：51c769d 曾未经批准推到 main，用户纠正后已 revert（bbcf01f，远端 main 恢复 0.1.1 兼容态）；全部 0.3.0 工作在本地分支 `adapt/dsh-0.1.2`（适配 f4aa396 徽章 + README 系列），发布时合并。② **runtime 升级坑**：`dsh-runtime` 改版本号后必须 `rm -rf node_modules pnpm-lock.yaml` 再 install——只改 package.json 会让 pnpm 复用旧 lockfile，产出「新核心+旧卫星包」混合树，官方插件批量 `does not provide an export named` 崩溃（deepFreeze/assertNever/snapshotJsonValue 等）。③ **web profile 最小化**：第三方插件未适配 0.1.2 的会拖死启动——`@nanmicoder/dsh-agent-teams`（`registerContinuableSetup` 移除）与 `@linxin666/dsh-client-ui-task-board`（`apiProxy` 服务不存在；它经 web-ui-all 聚合包注入，loader entry id 是带命名空间的 `web-ui-task-board`，不是包名也不是插件 name `plugin:task-board`）。bundle 列表裁到 `dsh-base + dsh-web-app + workbuddy-connect`，完整清单备份于 `package.json.bak-bundles-full`；patch.yml 里两条 disable 保留作保险。④ **TUI**：壳 0.10.0-beta.4（peer 已写 0.1.2-alpha.2）对 rc.1 适配不完整——装本插件后 `events is not iterable` 崩（`agent.session.events` 在 rc.1 变更）；**禁用本插件即可启动**，即触发器是我们、根因是壳。tui profile 已把 workbuddy 切 link:、壳升 beta.4。⑤ 版本对应（已写进 README）：0.3.0+ ↔ dsh `0.1.2-rc.1`+ / Desktop 2.0.5+；0.2.6 ↔ `0.1.1-rc.2`，混装任一方向都会拖死 DSH 启动。
+
+- **徽章拼进模型名（f4aa396，未发布）**：DSH 0.1.2 的 composer 模型下拉不再渲染 description（`dsh-client-ui-conversation` 产物中 description 出现 0 次；`model-selection` 仅剩一个行构建器 `label=name`/`detail=description 可选`，下拉不渲染 detail；用户看到的大空位是行距不是插槽）。故倍率与徽章合并拼进 name（`GLM-5.2 · x0.79 · 夜间折扣`），description 全线不再写入。旧 0.1.1 client 座位仍渲染 description，内容为空无影响。0.1.1 时代「description 放徽章」的方案记录作废。
+
+- **README 版本对应与文案（feaf71a…250a81e，未发布）**：安装章节加版本对应表（同上）；TUI 说明采用「实测现象 → 原因一句 → 建议怎么做」口径；功能列表全部改写为用户视角短句，标题由用户亲自定稿（徽章展示 / 费率比例），英文版同步。
+
+- **catalog 探测补录（2026-09-04）**：徽章现况 hy3/hy4-preview（限时免费）、glm-5.2（夜间折扣），换 CLI/CodeBuddy/WorkBuddy 三种 UA 结果一致（服务端不看 UA 下发）；DeepSeek 系夜间折扣与 GLM-5.3 系订阅优先不在 CLI catalog 中（WB App 客户端自绘）。另由 App 界面截图取证：auto 三档实为 快速 x0.21 / 均衡 x0.65 / 极致 x1.20、MAX 开关真实存在——issue #7 后续若做抓包，此为对照组基准。
 
 - **适配 DSH 0.1.2-rc.1（2026-09-03，未发布，将随 0.3.0）**：0.1.2 线两处破坏性变更（issue #10）——① `dsh-settings` 移除 `installSettingsSection` / `settingsNamespace`：改为 `ctx.inject(['settings'], …)` 后调用服务的 `installSection`，namespace 直接用字符串常量 `'workbuddy' as SettingsNamespace`；② `@deepseek-ai/dsh-client-runtime` 包被移除：client 改注入 `@deepseek-ai/dsh-client-ui-renderer`，`ClientContext` 类型改用 cordis 的 `Context`。peer/devDeps 全线升 `^0.1.2-rc.1`（cordis `^4.0.2`、schemastery `^3.18.2`、pi-ai `^0.84.2`——dsh-llm-pi-ai 0.1.2 已把 pi-ai 转为直接依赖 ^0.84.2）。**本版本起不再兼容 0.1.1 线**。适配参照 winliyou alpha 分支（其适配目标为 0.1.2-alpha.3），未做双线运行时兼容：client inject 清单无法按核心版本条件化。
 
@@ -25,4 +37,4 @@
 
 ## 发布规矩（同工作区根 AGENTS.md）
 
-未经明确指令不得 `npm publish` / 打 release tag；发布前 `pnpm run check` 全过，顺序固定：**先升版本号，再 check/构建，最后发布**。
+未经明确指令不得 `npm publish` / 打 release tag；**push 到远端（含普通 main 推送）必须先经用户同意，本地 commit 可自主**；发布前 `pnpm run check` 全过，顺序固定：**先升版本号，再 check/构建，最后发布**。
