@@ -101,4 +101,41 @@ describe('WorkBuddy Host settings integration', () => {
     const updated = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
     expect((updated?.value as Record<string, unknown>)['authFile']).toBe('/tmp/other-workbuddy.info')
   })
+
+  it('registers one provider per configured account from the persisted settings scope', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-multi-'))
+    vi.stubEnv('DSH_HOME', root)
+    const ctx = new Context()
+    context = ctx
+    // The persisted scope carries accounts, mirroring settings.yaml on a real
+    // host: the raw plugin config stays empty and must not decide the mode.
+    class SeededSettings extends MemorySettings {
+      protected override load(): Promise<Record<string, unknown>> {
+        return Promise.resolve({
+          [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accounts: ['jmglsi', 'miaoniang'], defaultAccount: 'jmglsi' },
+        })
+      }
+    }
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SeededSettings)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(() => {
+      const ids = ctx.llm.listProviders().map(provider => provider.id)
+      expect(ids).toContain('workbuddy:jmglsi')
+      expect(ids).toContain('workbuddy:miaoniang')
+    })
+    // The legacy single-account provider must NOT be registered alongside.
+    expect(ctx.llm.listProviders().map(provider => provider.id)).not.toContain('workbuddy')
+
+    const jmglsi = ctx.llm.listProviders().find(provider => provider.id === 'workbuddy:jmglsi')
+    expect(jmglsi?.name).toBe('WorkBuddy · jmglsi')
+
+    const models = await ctx.llm.listModels('workbuddy:jmglsi')
+    expect(models).toHaveLength(15)
+    const resolved = await ctx.llm.resolveModelInfo('workbuddy:jmglsi', 'auto')
+    // The exact-model metadata must echo the multi-account provider id: the
+    // host drops a provider whose resolveModelInfo mismatches its registry id.
+    expect(resolved.provider).toBe('workbuddy:jmglsi')
+  })
 })

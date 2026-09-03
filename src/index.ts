@@ -103,66 +103,78 @@ export const Config: z<Config> = z.object({
 export function apply(ctx: Context, config: Config): void {
   const client = new WorkBuddyUpstreamClient()
   const catalog = new WorkBuddyCatalog()
-
-  // Normalize the accounts config into provider entries.
-  const accountEntries: readonly { key: string }[] = (config.accounts ?? [])
-    .filter(key => key.trim() !== '')
-    .map(key => ({ key: key.trim() }))
-
-  const multiAccount = accountEntries.length > 0
-
-  // Single store (legacy) vs. multi-account manager. Both feed the shim, which
-  // discriminates by instance type.
-  const store: WorkBuddyCredentialStore | WorkBuddyAccountManager = multiAccount
-    ? new WorkBuddyAccountManager({
-      ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
-      refresh: credential => client.refreshToken(credential),
-    })
-    : new WorkBuddyCredentialStore({
-      ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
-      refresh: credential => client.refreshToken(credential),
-    })
-
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
-
-  // Same-origin status route backing the Plugin-configuration card; the
-  // webServer service is optional (a headless profile serves no browser).
-  ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store, client, models: () => catalog.current() }))
-
-  // The settings section is what makes the provider visible on the Models
-  // settings page (settings.describe joins the provider directory), and it
-  // keeps the configured auth-file path live across edits.
-  let current = () => config
-  installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
-    setSource(source) { current = source },
-    onChange() {
-      const next = current().authFile
-      if (store instanceof WorkBuddyCredentialStore) store.setDesktopPath(next)
-    },
-  })
-
   let stopped = false
+  /** Effective config: the settings scope value once the section joins, else the plugin config. */
+  let current: () => Config = () => config
+  let store: WorkBuddyCredentialStore | WorkBuddyAccountManager | undefined
+  let shim: ReturnType<typeof createWorkBuddyShim> | undefined
+  let invalidate: (() => void) | undefined
+
   ctx.effect(() => () => {
     stopped = true
-    void shim.close()
+    void shim?.close()
     void clearHostHeartbeat()
   })
 
-  void shim.ready
-    .then(() => {
-      if (stopped) return
+  // The settings section is what makes the provider visible on the Models
+  // settings page (settings.describe joins the provider directory), and it
+  // keeps the configured auth-file path live across edits. Its first
+  // onChange() fires once the settings service has joined the persisted
+  // scope values, so `current()` then reflects settings.yaml — that value,
+  // not the raw plugin config, decides multi-account mode. The runtime is
+  // booted from that callback; the promise merely lets the registration
+  // path wait for it deterministically.
+  const settingsReady = new Promise<void>(resolve => {
+    installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
+      setSource(source) { current = source },
+      onChange() {
+        const next = current().authFile
+        if (store instanceof WorkBuddyCredentialStore) store.setDesktopPath(next)
+        resolve()
+      },
+    })
+  })
 
-      let invalidate: (() => void) | undefined
-      try {
-        const registrations: Array<() => void> = []
+  const start = (active: Config): void => {
+    // Normalize the effective accounts config into provider entries.
+    const accountEntries: readonly { key: string }[] = (active.accounts ?? [])
+      .filter(key => key.trim() !== '')
+      .map(key => ({ key: key.trim() }))
+
+    const multiAccount = accountEntries.length > 0
+
+    // Single store (legacy) vs. multi-account manager. Both feed the shim,
+    // which discriminates by instance type.
+    const activeStore = multiAccount
+      ? new WorkBuddyAccountManager({
+        ...active.authFile === undefined ? {} : { desktopPath: active.authFile },
+        refresh: credential => client.refreshToken(credential),
+      })
+      : new WorkBuddyCredentialStore({
+        ...active.authFile === undefined ? {} : { desktopPath: active.authFile },
+        refresh: credential => client.refreshToken(credential),
+      })
+    store = activeStore
+
+    shim = createWorkBuddyShim({ store: activeStore, client, catalog, logger: ctx.logger })
+
+    // Same-origin status route backing the Plugin-configuration card; the
+    // webServer service is optional (a headless profile serves no browser).
+    ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store: activeStore, client, models: () => catalog.current() }))
+
+    void shim.ready
+      .then(() => {
+        if (stopped) return
+
+        let registrations: Array<() => void> = []
         const registerOne = (
           providerId: string,
           displayName: string,
           accountKey: string | undefined,
         ): void => {
           const workbuddy = createWorkBuddyAdapter({
-            shim,
-            store,
+            shim: shim!,
+            store: activeStore,
             catalog,
             providerId,
             displayName,
@@ -202,36 +214,37 @@ export function apply(ctx: Context, config: Config): void {
         // report host health without a browser. Cleared on disposal; a stale
         // heartbeat after a crash is detected by PID in the reader.
         void writeHostHeartbeat()
-      } catch (error: unknown) {
-        ctx.logger.error('dsh-workbuddy-connect: provider registration failed', error)
-        return
-      }
 
-      void (async () => {
-        try {
-          // Seed the dynamic catalog from the default (or first) account.
-          let credential: WorkBuddyCredential | undefined
-          if (store instanceof WorkBuddyAccountManager) {
-            const key = config.defaultAccount
-              ?? accountEntries[0]?.key
-            if (key !== undefined) credential = await store.resolve(key)
-          } else {
-            credential = await store.current()
+        void (async () => {
+          try {
+            // Seed the dynamic catalog from the default (or first) account.
+            let credential: WorkBuddyCredential | undefined
+            if (activeStore instanceof WorkBuddyAccountManager) {
+              const key = active.defaultAccount
+                ?? accountEntries[0]?.key
+              if (key !== undefined) credential = await activeStore.resolve(key)
+            } else {
+              credential = await activeStore.current()
+            }
+            if (credential === undefined || stopped) return
+            const models = await client.fetchModels(credential)
+            if (stopped) return
+            catalog.set([...models])
+            invalidate?.()
+          } catch (error: unknown) {
+            ctx.logger.warn(
+              'dsh-workbuddy-connect: dynamic model catalog unavailable; serving the static fallback list',
+              error,
+            )
           }
-          if (credential === undefined || stopped) return
-          const models = await client.fetchModels(credential)
-          if (stopped) return
-          catalog.set([...models])
-          invalidate?.()
-        } catch (error: unknown) {
-          ctx.logger.warn(
-            'dsh-workbuddy-connect: dynamic model catalog unavailable; serving the static fallback list',
-            error,
-          )
-        }
-      })()
-    })
-    .catch((error: unknown) => {
-      ctx.logger.error('dsh-workbuddy-connect: loopback endpoint failed to start; provider not registered', error)
-    })
+        })()
+      })
+      .catch((error: unknown) => {
+        ctx.logger.error('dsh-workbuddy-connect: loopback endpoint failed to start; provider not registered', error)
+      })
+  }
+
+  void settingsReady.then(() => {
+    if (!stopped) start(current())
+  })
 }
