@@ -40,51 +40,69 @@
 
 前置：已安装并登录 WorkBuddy 桌面 App（插件复用 App 的登录状态，账号切换自动跟随）。
 
-插件在三种 DSH 界面下均可运行：**Web**、**Desktop**、**TUI**。根据你使用的 profile 选对应命令安装。
+> 本 fork 增加了多账号支持与新版 host（`0.1.2`）兼容。**请从 GitHub 安装本仓库**，不要装插件市场里的 `dsh-workbuddy-connect`（那是无多账号的上游旧版）。以下以 **DSH Desktop** 为例。
+
+**方式一：一键脚本（macOS/Linux，推荐）**
 
 ```sh
-# Web（推荐，自带预构建产物）
-dsh plugin --profile web add dsh-workbuddy-connect
-dsh web
-
-# 或从 GitHub 源码安装 Web 版
-dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
-dsh web
+curl -fsSL https://raw.githubusercontent.com/jmglsi/dsh-workbuddy-connect/main/scripts/install-desktop.sh | sh
 ```
+
+脚本做三件事：把 `github:jmglsi/dsh-workbuddy-connect` 装进 `~/.dsh/profiles/desktop`、在 `package.json` 的 `dsh.profile.bundles` 里注册 bundle、提示重启 DSH Desktop。
+
+**方式二：手动**
 
 ```sh
-# Desktop（DSH Desktop 桌面版）
-dsh plugin --profile desktop add dsh-workbuddy-connect
-dsh --profile desktop
+# 1) 安装包（dsh 不在 PATH 时用 node ~/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js 代替 dsh）
+dsh plugin --profile desktop add github:jmglsi/dsh-workbuddy-connect
+
+# 2) 注册 bundle：编辑 ~/.dsh/profiles/desktop/package.json，
+#    在 "dsh" → "profile" → "bundles" 数组末尾追加 "dsh-workbuddy-connect"
+#    （如："bundles": ["@deepseek-ai/dsh-base", "...", "dsh-workbuddy-connect"]）
+
+# 3) 重启 DSH Desktop
 ```
 
-```sh
-# TUI（终端界面）
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect
-dsh --profile dsh-tui
-```
+装好后，在模型选择器里即可看到 `WorkBuddy` 分组；设置 → 插件 → **DSH WorkBuddy Connect** 卡片可查看账号昵称、令牌有效期、剩余积分，每个账号行有删除按钮（两段确认）。
 
-> 提示：`dsh-tui` profile 需用 pnpm 11 安装（PATH 里是其他版本会报 `ERR_PNPM_UNEXPECTED_STORE`，用 `npx pnpm@11` 即可）；已验证 dsh `0.1.1-rc.2`。
-
-安装后，在对应界面的模型选择器里切换到 WorkBuddy 模型即可使用；Web 下设置卡片（设置 → 插件 → DSH WorkBuddy Connect）可查看账号信息、令牌有效期与剩余积分，TUI 下可在 `/settings` 里配置 `authFile`。
+插件在 Web / TUI profile 下同样可用（`--profile web` / `--profile dsh-tui`，TUI 需 pnpm 11：`npx pnpm@11`）。
 
 ## 命令行
 
-`dsh plugin --profile <web|desktop|dsh-tui> exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。
+统一用 `dsh plugin --profile desktop exec dsh-workbuddy-connect <子命令>` 调用：
+
+```sh
+dsh plugin --profile desktop exec dsh-workbuddy-connect accounts   # 已导入账号列表（--json 机器可读）
+dsh plugin --profile desktop exec dsh-workbuddy-connect status     # 登录状态与剩余积分
+dsh plugin --profile desktop exec dsh-workbuddy-connect doctor     # 诊断
+```
 
 ## 多账号（可选）
 
 插件默认沿用桌面 App 的单一登录。要多个账号共存切换（如一个号额度耗尽换另一个），用快照式导入：
 
 ```sh
-# 1. 在 WorkBuddy 桌面 App 登录账号 A，然后：
-dsh-workbuddy-connect import a            # 快照当前桌面登录为账号 a
-# 2. 桌面 App 切登账号 B，然后：
-dsh-workbuddy-connect import b
-dsh-workbuddy-connect accounts            # 查看已导入账号；remove <key> 可删除
+# 1. 在 WorkBuddy 桌面 App 登录账号 A，然后（key 自己起名，如 jmglsi）：
+dsh plugin --profile desktop exec dsh-workbuddy-connect import a
+# 2. 桌面 App 切换登录账号 B，然后：
+dsh plugin --profile desktop exec dsh-workbuddy-connect import b
+# 3. 查看已导入账号；remove <key> 可删除（注意：remove 只删快照，
+#    记得同步从 accounts 配置里去掉该 key，卡片上的删除按钮会自动同步）
+dsh plugin --profile desktop exec dsh-workbuddy-connect accounts
 ```
 
-再在插件设置里把 `accounts` 配成 `["a", "b"]` 并重启 DSH，模型选择器里会出现 `WorkBuddy · a`、`WorkBuddy · b` 两组模型，各自独立刷新令牌、互不干扰。每个账号是导入时刻的快照（桌面文件只读、绝不回写），长期使用靠 refresh token 自动续期；若某账号 refresh token 失效，重新在桌面登录该账号后再 `import <key> --force` 覆盖即可。
+再在插件设置里把 `accounts` 配成 `["a", "b"]` 并重启 DSH，模型选择器里会出现 `WorkBuddy · a`、`WorkBuddy · b` 两组模型（快照带昵称时显示 `WorkBuddy · 昵称`），各自独立刷新令牌、互不干扰。`accounts` 有两种配法：
+
+- 设置 → 插件 → DSH WorkBuddy Connect 卡片的 accounts 字段；
+- 或 `~/.dsh/settings.yaml`：
+
+```yaml
+workbuddy:
+  accounts: [a, b]
+  defaultAccount: a
+```
+
+每个账号是导入时刻的快照（桌面文件只读、绝不回写），长期使用靠 refresh token 自动续期；若某账号 refresh token 失效，重新在桌面登录该账号后再 `import <key> --force` 覆盖即可。
 
 ## 已知限制
 
