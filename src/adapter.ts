@@ -178,12 +178,15 @@ function reasoningFields(info: WorkBuddyModelInfo): { reasoning: boolean; thinki
 }
 
 /** Build one pi-ai model descriptor pointing at the loopback shim. */
-function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
+function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string): Model<Api> {
   return {
     id: info.id,
     name: info.name,
     api: 'openai-completions',
-    provider: WORKBUDDY_PROVIDER,
+    // Must match the registered profile id: pi-ai's requireProvider looks the
+    // Model's `provider` up in the registry, so a stale base id here throws
+    // "Unknown provider: workbuddy" on every non-streaming call.
+    provider: providerId,
     baseUrl,
     input: info.supportsImages === true ? ['text', 'image'] : ['text'],
     ...reasoningFields(info),
@@ -212,7 +215,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     const baseUrl = accountKey === undefined
       ? `${shim.baseUrl()}/v1`
       : `${shim.baseUrl()}/v1/${encodeURIComponent(accountKey)}`
-    return catalog.current().map(info => toPiModel(info, baseUrl))
+    return catalog.current().map(info => toPiModel(info, baseUrl, providerId))
   }
 
   const base = createProvider({
