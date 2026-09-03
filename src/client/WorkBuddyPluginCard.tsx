@@ -5,7 +5,7 @@ import type { CSSProperties } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
-import type { WorkBuddyWebModelBadge, WorkBuddyWebStatus } from '../status-paths.ts'
+import type { WorkBuddyWebAccount, WorkBuddyWebModelBadge, WorkBuddyWebStatus } from '../status-paths.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -157,6 +157,42 @@ function ModelOfferRow({ model, t }: {
   )
 }
 
+/** One managed account rendered as a labeled subsection. */
+function AccountRow({ account, t }: {
+  account: WorkBuddyWebAccount
+  t: WorkBuddyPluginCardInjected['t']
+}): React.ReactNode {
+  const title = account.label ?? account.nickname ?? account.key
+  return (
+    <div style={quotaGroupStyle}>
+      <div style={rowStyle}>
+        <div style={statusStyle} role="status">
+          <span aria-hidden="true" style={dotStyle(account.state)} />
+          <span>{title}</span>
+        </div>
+        <span style={bodyStyle}>{account.state === 'signed-in' ? (account.nickname ?? account.key) : t('signedOut')}</span>
+      </div>
+      {account.expiresAt === undefined ? null
+        : <p style={bodyStyle}>{t('accessTokenExpires', { time: formatTime(account.expiresAt) })}</p>}
+      {account.credits === undefined ? null : (
+        account.credits.accounts
+          .filter(c => c.remain > 0)
+          .map((c, index) => (
+            <CreditBar
+              key={`${c.packageName}-${String(index)}`}
+              label={c.packageName}
+              remain={c.remain}
+              size={c.size}
+              t={t}
+            />
+          ))
+      )}
+      {account.creditsError === undefined ? null
+        : <p style={errorStyle}>{t('creditsError', { message: account.creditsError })}</p>}
+    </div>
+  )
+}
+
 /** Render WorkBuddy sign-in state and credit as one expandable card. */
 export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
@@ -214,8 +250,11 @@ export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
   }
 
   const title = t('title')
+  const accounts = status.status === 'signed-in' ? status.accounts : undefined
   const label = status.status === 'signed-in'
-    ? status.nickname === undefined ? t('signedInAs', { nickname: '' }).replace(/[:：]\s*$/, '') : t('signedInAs', { nickname: status.nickname })
+    ? accounts === undefined
+      ? status.nickname === undefined ? t('signedInAs', { nickname: '' }).replace(/[:：]\s*$/, '') : t('signedInAs', { nickname: status.nickname })
+      : t('multiAccountCount', { count: accounts.length })
     : status.status === 'error'
       ? t('requestFailed')
       : t('signedOut')
@@ -247,7 +286,14 @@ export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
                 {busy ? t('refreshing') : t('refresh')}
               </button>
             </div>
-            {status.status === 'signed-in'
+            {status.status === 'signed-in' && accounts !== undefined
+              ? accounts.length === 0
+                ? <p style={bodyStyle}>{t('multiAccountEmpty')}</p>
+                : <div style={quotaListStyle}>
+                    {accounts.map(account => <AccountRow key={account.key} account={account} t={t} />)}
+                  </div>
+              : null}
+            {status.status === 'signed-in' && accounts === undefined
               ? <>
                   {status.expiresAt === undefined ? null
                     : <p style={bodyStyle}>{t('accessTokenExpires', { time: formatTime(status.expiresAt) })}</p>}

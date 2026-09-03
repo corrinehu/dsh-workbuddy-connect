@@ -18,7 +18,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import { WorkBuddyAccountManager, WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 
@@ -47,7 +47,13 @@ export interface WorkBuddyShim {
 
 /** Constructor dependencies. */
 export interface WorkBuddyShimOptions {
-  store: WorkBuddyCredentialStore
+  /**
+   * Credential backend: a single {@link WorkBuddyCredentialStore} (legacy
+   * one-account mode) or a {@link WorkBuddyAccountManager} (multi-account).
+   * Multi-account requests target `/v1/<key>/chat/completions`; single-account
+   * requests use the bare `/v1/chat/completions` path.
+   */
+  store: WorkBuddyCredentialStore | WorkBuddyAccountManager
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
@@ -222,8 +228,17 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         return
       }
       if (req.method === 'POST' && (url === '/v1/chat/completions' || url === '/v1/chat/completions/')) {
-        await chatCompletions(req, res)
+        await chatCompletions(req, res, undefined)
         return
+      }
+      // Multi-account route: /v1/<key>/chat/completions (key is URL-encoded).
+      if (req.method === 'POST') {
+        const accountMatch = /^\/v1\/([^/]+)\/chat\/completions\/?$/u.exec(url)
+        if (accountMatch !== null) {
+          const key = decodeURIComponent(accountMatch[1]!)
+          await chatCompletions(req, res, key)
+          return
+        }
       }
       writeOpenAIError(res, 404, 'not_found', `no such route: ${req.method} ${url}`)
     } catch (error: unknown) {
@@ -235,14 +250,24 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     }
   }
 
-  async function chatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function chatCompletions(req: IncomingMessage, res: ServerResponse, accountKey: string | undefined): Promise<void> {
     if (!isJsonContentType(req)) {
       writeOpenAIError(res, 415, 'unsupported_media_type', 'Content-Type must be application/json')
       return
     }
     let credential
     try {
-      credential = await store.resolve()
+      if (accountKey === undefined) {
+        if (!(store instanceof WorkBuddyCredentialStore)) {
+          throw new Error('workbuddy: this endpoint serves one account only; use the account-scoped route')
+        }
+        credential = await store.resolve()
+      } else {
+        if (!(store instanceof WorkBuddyAccountManager)) {
+          throw new Error('workbuddy: multi-account is not enabled on this build')
+        }
+        credential = await store.resolve(accountKey)
+      }
     } catch (error: unknown) {
       writeOpenAIError(res, 401, 'not_signed_in', String(error))
       return

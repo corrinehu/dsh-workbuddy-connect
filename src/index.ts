@@ -9,7 +9,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
-import { WorkBuddyCredentialStore } from './auth.ts'
+import { WorkBuddyAccountManager, WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
 import { WorkBuddyCatalog } from './catalog.ts'
 import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
@@ -30,8 +30,12 @@ export {
   parseWorkBuddyAuth,
   WORKBUDDY_AUTH_FILE_ENV,
   WORKBUDDY_AUTH_FILENAME,
+  WorkBuddyAccountManager,
   WorkBuddyCredentialStore,
+  workbuddyAccountDir,
   workbuddyOwnAuthPath,
+  type WorkBuddyAccountInfo,
+  type WorkBuddyAccountStatus,
   type WorkBuddyAuthStatus,
   type WorkBuddyCredential,
 } from './auth.ts'
@@ -73,10 +77,21 @@ export const WORKBUDDY_SETTINGS_NS = settingsNamespace('workbuddy')
 export interface Config {
   /** Explicit WorkBuddy desktop auth-file path, overriding env and platform defaults. */
   authFile?: string
+  /**
+   * Multi-account mode. When omitted or empty, the plugin serves the single
+   * desktop sign-in (legacy behavior). Each listed key must be imported first
+   * via the CLI (`dsh-workbuddy-connect import <key>`); one provider is
+   * registered per key, displayed as `WorkBuddy · <key>`.
+   */
+  accounts?: string[]
+  /** Account key whose credential seeds the shared dynamic model catalog. */
+  defaultAccount?: string
 }
 
 export const Config: z<Config> = z.object({
   authFile: z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)'),
+  accounts: z.array(z.string()).description('Account keys to expose as separate providers (import each via the CLI first)'),
+  defaultAccount: z.string().description('Account key used to refresh the shared model catalog'),
 })
 
 /**
@@ -87,11 +102,27 @@ export const Config: z<Config> = z.object({
  */
 export function apply(ctx: Context, config: Config): void {
   const client = new WorkBuddyUpstreamClient()
-  const store = new WorkBuddyCredentialStore({
-    ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
-    refresh: credential => client.refreshToken(credential),
-  })
   const catalog = new WorkBuddyCatalog()
+
+  // Normalize the accounts config into provider entries.
+  const accountEntries: readonly { key: string }[] = (config.accounts ?? [])
+    .filter(key => key.trim() !== '')
+    .map(key => ({ key: key.trim() }))
+
+  const multiAccount = accountEntries.length > 0
+
+  // Single store (legacy) vs. multi-account manager. Both feed the shim, which
+  // discriminates by instance type.
+  const store: WorkBuddyCredentialStore | WorkBuddyAccountManager = multiAccount
+    ? new WorkBuddyAccountManager({
+      ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
+      refresh: credential => client.refreshToken(credential),
+    })
+    : new WorkBuddyCredentialStore({
+      ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
+      refresh: credential => client.refreshToken(credential),
+    })
+
   const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
 
   // Same-origin status route backing the Plugin-configuration card; the
@@ -106,7 +137,7 @@ export function apply(ctx: Context, config: Config): void {
     setSource(source) { current = source },
     onChange() {
       const next = current().authFile
-      store.setDesktopPath(next)
+      if (store instanceof WorkBuddyCredentialStore) store.setDesktopPath(next)
     },
   })
 
@@ -123,44 +154,48 @@ export function apply(ctx: Context, config: Config): void {
 
       let invalidate: (() => void) | undefined
       try {
-        // Constructed only once the listener holds a port: the provider's
-        // models read the shim origin at construction time.
-        const workbuddy = createWorkBuddyAdapter({
-          shim,
-          store,
-          catalog,
-          resolveAttachments: () => ctx.get('attachments'),
-        })
-        invalidate = workbuddy.invalidate
-
-        let releaseAdapter: (() => void) | undefined
-        let releaseDirectory: (() => void) | undefined
-        try {
-          releaseAdapter = ctx.llm.registerAdapter([WORKBUDDY_PROVIDER], workbuddy.adapter)
-          releaseDirectory = ctx.llm.registerConfigurableProviders([{
-            provider: WORKBUDDY_PROVIDER,
-            displayName: 'WorkBuddy',
+        const registrations: Array<() => void> = []
+        const registerOne = (
+          providerId: string,
+          displayName: string,
+          accountKey: string | undefined,
+        ): void => {
+          const workbuddy = createWorkBuddyAdapter({
+            shim,
+            store,
+            catalog,
+            providerId,
+            displayName,
+            ...accountKey === undefined ? {} : { accountKey },
+            resolveAttachments: () => ctx.get('attachments'),
+          })
+          invalidate = workbuddy.invalidate
+          const releaseAdapter = ctx.llm.registerAdapter([providerId], workbuddy.adapter)
+          const releaseDirectory = ctx.llm.registerConfigurableProviders([{
+            provider: providerId,
+            displayName,
             settingsNs: WORKBUDDY_SETTINGS_NS,
             settingsPath: [],
             declared: false,
           }])
-        } finally {
-          if (releaseAdapter === undefined || releaseDirectory === undefined) {
-            // Registration threw; release whichever half landed.
-            releaseAdapter?.()
-            releaseDirectory?.()
+          registrations.push(releaseAdapter, releaseDirectory)
+        }
+
+        if (!multiAccount) {
+          registerOne(WORKBUDDY_PROVIDER, 'WorkBuddy', undefined)
+        } else {
+          for (const entry of accountEntries) {
+            const providerId = `${WORKBUDDY_PROVIDER}:${entry.key}`
+            registerOne(providerId, `WorkBuddy · ${entry.key}`, entry.key)
           }
         }
+
         try {
           ctx.effect(() => () => {
-            releaseAdapter?.()
-            releaseDirectory?.()
+            for (const release of registrations) release()
           })
         } catch {
-          // The plugin was disposed during registration; release immediately —
-          // the plugin-level disposer already closed the shim.
-          releaseAdapter?.()
-          releaseDirectory?.()
+          for (const release of registrations) release()
         }
 
         // The host bundle is live: write a heartbeat so the status CLI can
@@ -174,7 +209,15 @@ export function apply(ctx: Context, config: Config): void {
 
       void (async () => {
         try {
-          const credential = await store.current()
+          // Seed the dynamic catalog from the default (or first) account.
+          let credential: WorkBuddyCredential | undefined
+          if (store instanceof WorkBuddyAccountManager) {
+            const key = config.defaultAccount
+              ?? accountEntries[0]?.key
+            if (key !== undefined) credential = await store.resolve(key)
+          } else {
+            credential = await store.current()
+          }
           if (credential === undefined || stopped) return
           const models = await client.fetchModels(credential)
           if (stopped) return

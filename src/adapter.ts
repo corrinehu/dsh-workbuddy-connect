@@ -14,7 +14,7 @@ import type { LlmModelInfo, LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyAccountManager, WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyShim } from './shim.ts'
 import { normalizeCredits } from './upstream.ts'
@@ -106,8 +106,19 @@ function withRate(name: string, info: WorkBuddyModelInfo): string {
 /** Constructor dependencies. */
 export interface WorkBuddyAdapterOptions {
   shim: WorkBuddyShim
-  store: WorkBuddyCredentialStore
+  /** Credential backend: single store (legacy) or multi-account manager. */
+  store: WorkBuddyCredentialStore | WorkBuddyAccountManager
   catalog: WorkBuddyCatalog
+  /** Provider identifier registered into the Harness; defaults to `workbuddy`. */
+  providerId?: string
+  /**
+   * Account key this provider serves, when the store is a
+   * {@link WorkBuddyAccountManager}. Encoded into the model baseUrl so the
+   * shim routes requests to the right account. Omit for the legacy store.
+   */
+  accountKey?: string
+  /** Display name shown in the model picker; defaults to `WorkBuddy`. */
+  displayName?: string
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined
 }
@@ -187,17 +198,24 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
  */
 export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter {
   const { shim, store, catalog, resolveAttachments } = options
+  const providerId = options.providerId ?? WORKBUDDY_PROVIDER
+  const displayName = options.displayName ?? 'WorkBuddy'
+  const accountKey = options.accountKey
 
   const buildModels = (): Model<Api>[] => {
     // The OpenAI SDK pi-ai drives appends `/chat/completions` to baseURL,
-    // so the shim's routes line up with the `/v1` prefix in place.
-    const baseUrl = `${shim.baseUrl()}/v1`
+    // so the shim's routes line up with the `/v1` prefix in place. For a
+    // multi-account provider the account key is encoded into the path so the
+    // shim routes to the right credential store.
+    const baseUrl = accountKey === undefined
+      ? `${shim.baseUrl()}/v1`
+      : `${shim.baseUrl()}/v1/${encodeURIComponent(accountKey)}`
     return catalog.current().map(info => toPiModel(info, baseUrl))
   }
 
   const base = createProvider({
-    id: WORKBUDDY_PROVIDER,
-    name: 'WorkBuddy',
+    id: providerId,
+    name: displayName,
     auth: {
       apiKey: {
         name: 'WorkBuddy OAuth bearer token',
@@ -219,8 +237,8 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
   const provider: Provider = { ...base, getModels: () => buildModels() }
 
   const profile: ResolvedPiAiProviderProfile = {
-    provider: WORKBUDDY_PROVIDER,
-    displayName: 'WorkBuddy',
+    provider: providerId,
+    displayName,
     streamIdleTimeoutMs: WORKBUDDY_STREAM_IDLE_TIMEOUT_MS,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-workbuddy-connect retryPolicy'),
     configuredMaxTokens: new Map(),
@@ -228,7 +246,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     piProvider: provider,
   }
 
-  let profiles = new Map<string, ResolvedPiAiProviderProfile>([[WORKBUDDY_PROVIDER, profile]])
+  let profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])
 
   const adapter = new WorkBuddyPiAiAdapter(catalog, {
     profiles: () => profiles,
@@ -244,7 +262,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
   return {
     adapter,
     invalidate: () => {
-      profiles = new Map<string, ResolvedPiAiProviderProfile>([[WORKBUDDY_PROVIDER, profile]])
+      profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])
     },
   }
 }

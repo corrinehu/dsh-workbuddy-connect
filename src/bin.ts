@@ -3,13 +3,13 @@
 
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
+import { WorkBuddyAccountManager, WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
 
-type Action = 'doctor' | 'logout' | 'status'
+type Action = 'accounts' | 'doctor' | 'import' | 'logout' | 'remove' | 'status'
 
 const JSON_SCHEMA_VERSION = 1
 
@@ -23,12 +23,15 @@ function safeMessage(error: unknown): string {
 
 function printHelp(): void {
   process.stdout.write([
-    'Usage: dsh-workbuddy-connect <doctor|status|logout> [--json]',
+    'Usage: dsh-workbuddy-connect <action> [args] [--json]',
     '',
-    '  doctor   secret-free sign-in and environment diagnostics',
-    '  status   sign-in state, remaining WorkBuddy credit, and host-bundle health',
-    '  logout   remove the plugin-owned credential copy (the desktop app keeps its sign-in)',
-    '  --json   emit one secret-free JSON document (doctor/status only)',
+    '  doctor    secret-free sign-in and environment diagnostics',
+    '  status    sign-in state, remaining WorkBuddy credit, and host-bundle health',
+    '  logout    remove the single-account plugin-owned credential copy',
+    '  accounts  list imported WorkBuddy accounts',
+    '  import    import the live desktop sign-in as <key>: import <key> [label] [--force]',
+    '  remove    remove an imported account: remove <key>',
+    '  --json    emit one secret-free JSON document (doctor/status/accounts only)',
     '',
   ].join('\n'))
 }
@@ -40,6 +43,11 @@ function printJson(value: unknown): void {
 function makeStore(): WorkBuddyCredentialStore {
   const client = new WorkBuddyUpstreamClient()
   return new WorkBuddyCredentialStore({ refresh: credential => client.refreshToken(credential) })
+}
+
+function makeManager(): WorkBuddyAccountManager {
+  const client = new WorkBuddyUpstreamClient()
+  return new WorkBuddyAccountManager({ refresh: credential => client.refreshToken(credential) })
 }
 
 async function doctor(jsonOutput: boolean): Promise<number> {
@@ -140,31 +148,88 @@ async function status(jsonOutput: boolean): Promise<number> {
   return 0
 }
 
+async function accounts(jsonOutput: boolean): Promise<number> {
+  const manager = makeManager()
+  const statuses = await manager.statuses()
+  if (jsonOutput) {
+    printJson({ schemaVersion: JSON_SCHEMA_VERSION, package: 'dsh-workbuddy-connect', version: WORKBUDDY_CONNECT_VERSION, accounts: statuses })
+    return 0
+  }
+  if (statuses.length === 0) {
+    process.stdout.write('WorkBuddy Connect: no imported accounts. Run `import <key>` after signing in on the desktop app.\n')
+    return 0
+  }
+  for (const entry of statuses) {
+    const who = entry.nickname ?? entry.key
+    process.stdout.write(`- ${entry.key}${entry.state === 'signed-in' ? `  (${who})` : '  (signed-out)'}\n`)
+  }
+  return 0
+}
+
+async function importAccount(args: readonly string[]): Promise<number> {
+  const key = args[0]
+  if (key === undefined || key.startsWith('--')) {
+    process.stderr.write('dsh-workbuddy-connect: import requires an account key: import <key> [label] [--force]\n')
+    return 1
+  }
+  const label = args[1] === undefined || args[1].startsWith('--') ? undefined : args[1]
+  const force = args.includes('--force')
+  try {
+    const manager = makeManager()
+    const info = await manager.importFromDesktop(key, { ...label === undefined ? {} : { label }, force })
+    process.stdout.write(`WorkBuddy Connect: imported desktop sign-in as account "${info.key}"${label === undefined ? '' : ` (${label})`}\n`)
+    return 0
+  } catch (error: unknown) {
+    process.stderr.write(`dsh-workbuddy-connect: import failed: ${safeMessage(error)}\n`)
+    return 1
+  }
+}
+
+async function removeAccount(args: readonly string[]): Promise<number> {
+  const key = args[0]
+  if (key === undefined || key.startsWith('--')) {
+    process.stderr.write('dsh-workbuddy-connect: remove requires an account key: remove <key>\n')
+    return 1
+  }
+  try {
+    const manager = makeManager()
+    await manager.remove(key)
+    process.stdout.write(`WorkBuddy Connect: removed account "${key}"; the desktop app's sign-in is untouched\n`)
+    return 0
+  } catch (error: unknown) {
+    process.stderr.write(`dsh-workbuddy-connect: remove failed: ${safeMessage(error)}\n`)
+    return 1
+  }
+}
+
 /** Execute one boot-free command. */
 export async function run(argv: readonly string[]): Promise<number> {
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
     printHelp()
     return 0
   }
-  const [rawAction, ...flags] = argv
-  const actions: readonly Action[] = ['doctor', 'logout', 'status']
+  const [rawAction, ...rest] = argv
+  const actions: readonly Action[] = ['accounts', 'doctor', 'import', 'logout', 'remove', 'status']
   if (!actions.includes(rawAction as Action)) {
-    process.stderr.write(`dsh-workbuddy-connect: expected doctor, logout, or status; got ${JSON.stringify(rawAction)}\n`)
+    process.stderr.write(`dsh-workbuddy-connect: expected accounts, doctor, import, logout, remove, or status; got ${JSON.stringify(rawAction)}\n`)
     return 1
   }
   const action = rawAction as Action
+  const flags = rest.filter(arg => arg.startsWith('--'))
+  const positional = rest.filter(arg => !arg.startsWith('--'))
   const jsonOutput = flags.includes('--json')
-  const unknown = flags.filter(flag => flag !== '--json')
-  if (unknown.length > 0 || (jsonOutput && action === 'logout')) {
-    process.stderr.write(`dsh-workbuddy-connect: invalid options for ${action}: ${flags.join(' ')}\n`)
-    return 1
-  }
   try {
     switch (action) {
+      case 'accounts':
+        return await accounts(jsonOutput)
       case 'doctor':
         return await doctor(jsonOutput)
       case 'status':
         return await status(jsonOutput)
+      case 'import':
+        return await importAccount(positional)
+      case 'remove':
+        return await removeAccount(positional)
       case 'logout': {
         const store = makeStore()
         await store.logout()

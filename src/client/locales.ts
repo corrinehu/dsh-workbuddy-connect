@@ -25,6 +25,8 @@ export const en = {
   badgeLimitedFree: 'Limited-time free',
   badgeNightDiscount: 'Night discount',
   rate: '{rate} credits per message',
+  multiAccountCount: '{count} accounts connected',
+  multiAccountEmpty: 'No accounts imported yet; run `dsh-workbuddy-connect import <key>` after signing in on the desktop app.',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -54,4 +56,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   badgeLimitedFree: '限时免费',
   badgeNightDiscount: '夜间折扣',
   rate: '{rate} 积分/次',
+  multiAccountCount: '已连接 {count} 个账号',
+  multiAccountEmpty: '尚未导入任何账号；在桌面 App 登录后运行 `dsh-workbuddy-connect import <key>`。',
 }

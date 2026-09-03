@@ -9,19 +9,23 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { WorkBuddyAccountManager } from './auth.ts'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebModelBadge, WorkBuddyWebStatus } from './status-paths.ts'
+import type { WorkBuddyWebAccount, WorkBuddyWebModelBadge, WorkBuddyWebStatus } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
 
+/** Credential backend: single store (legacy) or multi-account manager. */
+export type WorkBuddyStatusStore = WorkBuddyCredentialStore | WorkBuddyAccountManager
+
 /** Constructor dependencies. */
 export interface WorkBuddyStatusRouteOptions {
-  store: WorkBuddyCredentialStore
+  store: WorkBuddyStatusStore
   client: Pick<WorkBuddyUpstreamClient, 'fetchCredits'>
   /** Resolve the current model catalog for free/badge display. */
   models: () => readonly WorkBuddyModelInfo[]
@@ -56,11 +60,37 @@ function loopbackOrigin(req: IncomingMessage): boolean {
 /**
  * Assemble the card's status document. Sign-in state is read-only; credit is
  * a live billing answer whose failure degrades to `creditsError` rather than
- * failing the whole document.
+ * failing the whole document. In multi-account mode the document lists every
+ * managed account with its own sign-in and credit summary.
  */
 export async function workBuddyWebStatus(
   deps: WorkBuddyStatusRouteOptions,
 ): Promise<WorkBuddyWebStatus> {
+  if (deps.store instanceof WorkBuddyAccountManager) {
+    const statuses = await deps.store.statuses()
+    if (statuses.length === 0) return { status: 'signed-out' }
+    const accounts: WorkBuddyWebAccount[] = []
+    for (const entry of statuses) {
+      const account: WorkBuddyWebAccount = {
+        key: entry.key,
+        state: entry.state,
+        ...entry.nickname === undefined ? {} : { nickname: entry.nickname },
+        ...entry.domain === undefined || entry.domain === '' ? {} : { domain: entry.domain },
+        ...entry.expiresAtMs === undefined ? {} : { expiresAt: entry.expiresAtMs },
+      }
+      if (entry.state === 'signed-in') {
+        try {
+          const credential = await deps.store.resolve(entry.key)
+          account.credits = await deps.client.fetchCredits(credential)
+        } catch (error: unknown) {
+          account.creditsError = safeMessage(error)
+        }
+      }
+      accounts.push(account)
+    }
+    return { status: 'signed-in', accounts }
+  }
+
   const authStatus = await deps.store.status()
   if (authStatus.state !== 'signed-in') return { status: 'signed-out' }
   const status: WorkBuddyWebStatus = {

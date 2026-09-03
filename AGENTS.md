@@ -3,6 +3,23 @@
 ## 待办
 
 - PR #4（WSL 凭据发现）已合并进 v0.2.4：等作者 CallMeSoul 基于 npm 包回归验证（PR 评论里已请求）。
+- 多账户支持（本地工作树，未发版）：真机 DSH（web/desktop/TUI）尚未回归——`settings-integration.spec` 覆盖了 apply 装配，但动态 provider 注册（`workbuddy:<key>` 多 provider 并存）需在真实模型选择器里确认分组显示。
+
+## 多账户支持（2026-09-03，本地工作树）
+
+目标：多个 WorkBuddy 账号共存、按需切换，实现不间断使用。设计（用户选定）：**模型列表按账号分组 + 插件自管多账户（快照式导入）**。
+
+- **快照模型**：桌面 App 同时只有一个登录态，插件不凭空登号。用户在桌面登录 A → CLI `import a` 把当前登录态快照进 `$DSH_HOME/.workbuddy-auth/<key>.json`（version 1 own 格式，同单账户副本）；桌面切登 B → `import b`。每个 key 一个独立 `WorkBuddyCredentialStore`（`WorkBuddyAccountManager.storeFor`），刷新互相独立。
+- **账户隔离红线**：账户 store 的 `desktopPath` 指向 sentinel 不存在路径（`.workbuddy-auth/.no-desktop`），**永不回落探测真实桌面文件**——否则桌面后续换登别的账号会泄漏进所有已导入账户（冒烟实测踩过）。
+- **provider 分组**：`Config.accounts`（string[]）非空时，每个 key 注册独立 provider `workbuddy:<key>`（displayName `WorkBuddy · <key>`），baseUrl 编码账号 `/v1/<key>`；`accounts` 为空保持单账户 legacy（provider `workbuddy`）完全不变。
+- **shim 路由**：`/v1/<key>/chat/completions`（multi）/ `/v1/chat/completions`（legacy），shim 按 `instanceof` 区分 `WorkBuddyCredentialStore | WorkBuddyAccountManager`；`/v1/<key>/models` 同目录。
+- **CLI**：`accounts`（列表，--json 可用）、`import <key> [label] [--force]`（快照当前桌面登录，默认拒绝覆盖已有 key）、`remove <key>`。
+- **顺手修的三个原版 bug**（均被新测试暴露）：
+  1. `parseOwnDocument` 复用 `parseWorkBuddyAuth` 读 `auth['expiresAt']`，而 own 格式写的是 `expiresAtMs` → own 回读过期时间恒 0 → 单账户模式下 `needsRefresh` 恒真、**每个请求都打一次 refresh 端点**，且刷新副本永远竞争不过未过期桌面文件。改为专用驼峰解析。
+  2. 同路径下 uid/nickname/enterpriseId 在 own 往返后丢失 → 账户快照模式无桌面兜底，请求会退化成 `X-No-User-Id: 1`。专用解析同时修复。
+  3. `saveOwn` 不建父目录 → 首次写 `.workbuddy-auth/<key>.json` 时锁文件 ENOENT。加 `mkdir -p`。
+- **测试**：`tests/multi-account.spec.ts`（manager 发现/导入/隔离/解析/删除/seedOwn）+ `tests/shim-multi-account.spec.ts`（keyed 路由、未知 key 401、manager 拒 bare path）。全部用临时 `DSH_HOME`，不碰真机凭据。
+- **已知取舍**：label 仅在 import 成功提示里回显，不持久化（own 格式没这字段，避免 version 升级）；新导入的账号要出现在模型选择器需重启 DSH（provider 在 apply 时注册，无运行时热注册/目录监听）。
 
 ## 最近发布
 

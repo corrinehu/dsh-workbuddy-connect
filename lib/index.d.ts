@@ -178,6 +178,8 @@ declare const WORKBUDDY_AUTH_FILENAME = ".workbuddy-auth.json";
 declare const WORKBUDDY_AUTH_FILE_ENV = "WORKBUDDY_AUTH_FILE";
 /** Plugin-owned copy path inside the Harness home. */
 declare function workbuddyOwnAuthPath(): string;
+/** Directory holding one plugin-owned credential copy per managed account. */
+declare function workbuddyAccountDir(): string;
 /**
  * Platform-default candidates for the WorkBuddy desktop app's auth file, in
  * probe order. Windows probes both AppData roots: current builds write under
@@ -236,6 +238,13 @@ declare class WorkBuddyCredentialStore {
   status(): Promise<WorkBuddyAuthStatus>;
   /** Remove the plugin-owned copy; the desktop file is untouched. */
   logout(): Promise<void>;
+  /**
+   * Take ownership of an already-resolved credential by writing it to the
+   * plugin-owned copy verbatim (no upstream refresh). Used by the multi-account
+   * manager to snapshot a desktop sign-in under a stable account key; the
+   * desktop file is never written.
+   */
+  seedOwn(credential: WorkBuddyCredential): Promise<void>;
   private needsRefresh;
   private refreshNow;
   private saveOwn;
@@ -249,6 +258,84 @@ declare class WorkBuddyCredentialStore {
   private readOwn;
   /** Whether any desktop-file candidate exists as a regular file; diagnostics only. */
   desktopFilePresent(): Promise<boolean>;
+}
+/**
+ * Multi-account registry. The plugin reuses the WorkBuddy desktop app's
+ * single sign-in, but a user may want several accounts available at once (for
+ * uninterrupted switching). Because the desktop app keeps only one sign-in,
+ * each account is a *snapshot*: the user signs in on the desktop, then imports
+ * the live sign-in under a stable key; the manager stores the refreshed copy
+ * under `$DSH_HOME/.workbuddy-auth/<key>.json` and never writes the desktop
+ * file. Each key maps to its own {@link WorkBuddyCredentialStore}, so token
+ * refresh stays independent per account.
+ *
+ * @module dsh-workbuddy-connect/auth
+ */
+/** One managed account's discovery metadata (no token material). */
+interface WorkBuddyAccountInfo {
+  /** Stable account key (the on-disk filename stem). */
+  key: string;
+  /** Optional human label shown in the UI; defaults to the nickname/uid. */
+  label?: string;
+  /** Where the stored copy came from. */
+  source: 'desktop' | 'dsh';
+}
+/** A managed account plus its live sign-in summary. */
+interface WorkBuddyAccountStatus extends WorkBuddyAccountInfo {
+  state: 'signed-in' | 'signed-out';
+  nickname?: string;
+  domain?: string;
+  expiresAtMs?: number;
+  refreshExpiresAtMs?: number;
+}
+/** Options for {@link WorkBuddyAccountManager}. */
+interface WorkBuddyAccountManagerOptions {
+  /** Performs the upstream token refresh for any owned store. */
+  refresh: (credential: WorkBuddyCredential) => Promise<WorkBuddyRefreshOutcome>;
+  /** Optional explicit desktop auth-file path; falls back to platform defaults. */
+  desktopPath?: string;
+  /** Refresh this long before expiry; default five minutes. */
+  refreshMarginMs?: number;
+}
+/**
+ * Discover, import, list, resolve, and remove managed WorkBuddy accounts.
+ *
+ * Discovery is filesystem-based: every `*.json` directly inside
+ * {@link workbuddyAccountDir} whose `version` matches the own format is an
+ * account. Accounts are never enumerated from the desktop app, which holds at
+ * most one sign-in.
+ */
+declare class WorkBuddyAccountManager {
+  private readonly refresh;
+  private readonly refreshMarginMs;
+  private readonly desktopPathOverride;
+  private readonly stores;
+  constructor(options: WorkBuddyAccountManagerOptions);
+  /** Read-only store for one account; lazily constructed and cached. */
+  storeFor(key: string): WorkBuddyCredentialStore;
+  /** The desktop credential store, for reading/importing the live sign-in. */
+  desktopStore(): WorkBuddyCredentialStore;
+  /** List discovered account keys (filename stems) from the account directory. */
+  listAccounts(): Promise<string[]>;
+  private accountInfo;
+  /**
+   * Snapshot the live desktop sign-in under `key`. Reads the desktop file
+   * (read-only), writes the plugin-owned copy under that key, and returns the
+   * resulting account info. Refuses to overwrite a key that already exists
+   * unless `force` is set, so an accidental re-import does not clobber.
+   */
+  importFromDesktop(key: string, options?: {
+    label?: string;
+    force?: boolean;
+  }): Promise<WorkBuddyAccountInfo>;
+  /** Live sign-in summary for one account, or signed-out when absent/broken. */
+  statusOf(key: string): Promise<WorkBuddyAccountStatus>;
+  /** Sign-in summary for every discovered account. */
+  statuses(): Promise<WorkBuddyAccountStatus[]>;
+  /** Resolve the freshest credential for one account, refreshing on demand. */
+  resolve(key: string): Promise<WorkBuddyCredential>;
+  /** Remove one account's plugin-owned copy; the desktop app is untouched. */
+  remove(key: string): Promise<void>;
 }
 //#endregion
 //#region src/catalog.d.ts
@@ -300,7 +387,13 @@ interface WorkBuddyShim {
 }
 /** Constructor dependencies. */
 interface WorkBuddyShimOptions {
-  store: WorkBuddyCredentialStore;
+  /**
+   * Credential backend: a single {@link WorkBuddyCredentialStore} (legacy
+   * one-account mode) or a {@link WorkBuddyAccountManager} (multi-account).
+   * Multi-account requests target `/v1/<key>/chat/completions`; single-account
+   * requests use the bare `/v1/chat/completions` path.
+   */
+  store: WorkBuddyCredentialStore | WorkBuddyAccountManager;
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
@@ -319,8 +412,19 @@ declare const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300000;
 /** Constructor dependencies. */
 interface WorkBuddyAdapterOptions {
   shim: WorkBuddyShim;
-  store: WorkBuddyCredentialStore;
+  /** Credential backend: single store (legacy) or multi-account manager. */
+  store: WorkBuddyCredentialStore | WorkBuddyAccountManager;
   catalog: WorkBuddyCatalog;
+  /** Provider identifier registered into the Harness; defaults to `workbuddy`. */
+  providerId?: string;
+  /**
+   * Account key this provider serves, when the store is a
+   * {@link WorkBuddyAccountManager}. Encoded into the model baseUrl so the
+   * shim routes requests to the right account. Omit for the legacy store.
+   */
+  accountKey?: string;
+  /** Display name shown in the model picker; defaults to `WorkBuddy`. */
+  displayName?: string;
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined;
 }
@@ -413,6 +517,15 @@ declare const WORKBUDDY_SETTINGS_NS: import("@deepseek-ai/dsh-settings").Setting
 interface Config {
   /** Explicit WorkBuddy desktop auth-file path, overriding env and platform defaults. */
   authFile?: string;
+  /**
+   * Multi-account mode. When omitted or empty, the plugin serves the single
+   * desktop sign-in (legacy behavior). Each listed key must be imported first
+   * via the CLI (`dsh-workbuddy-connect import <key>`); one provider is
+   * registered per key, displayed as `WorkBuddy · <key>`.
+   */
+  accounts?: string[];
+  /** Account key whose credential seeds the shared dynamic model catalog. */
+  defaultAccount?: string;
 }
 declare const Config: z<Config>;
 /**
@@ -423,4 +536,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, normalizeCredits, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };
+export { Config, FALLBACK_WORKBUDDY_MODELS, type UpstreamErrorKind, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, type WorkBuddyAccountInfo, WorkBuddyAccountManager, type WorkBuddyAccountStatus, type WorkBuddyAdapter, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, inject, isHeartbeatProcessAlive, name, normalizeCredits, parseWorkBuddyAuth, prepareChatBody, processStartTimeMs, readHostHeartbeat, regionOf, workbuddyAccountDir, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath };

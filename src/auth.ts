@@ -8,9 +8,9 @@
  * @module dsh-workbuddy-connect/auth
  */
 
-import { readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { homedir, release } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { WorkBuddyRefreshOutcome } from './upstream.ts'
@@ -54,6 +54,9 @@ export interface WorkBuddyStoreOptions {
 /** Basename of the plugin-owned credential copy inside the Harness home. */
 export const WORKBUDDY_AUTH_FILENAME = '.workbuddy-auth.json'
 
+/** Directory under the Harness home holding one plugin-owned copy per account. */
+export const WORKBUDDY_AUTH_DIRNAME = '.workbuddy-auth'
+
 /** Env variable that overrides the desktop auth-file location. */
 export const WORKBUDDY_AUTH_FILE_ENV = 'WORKBUDDY_AUTH_FILE'
 
@@ -68,6 +71,16 @@ interface OwnDocument {
 /** Plugin-owned copy path inside the Harness home. */
 export function workbuddyOwnAuthPath(): string {
   return join(resolveDshHome(), WORKBUDDY_AUTH_FILENAME)
+}
+
+/** Directory holding one plugin-owned credential copy per managed account. */
+export function workbuddyAccountDir(): string {
+  return join(resolveDshHome(), WORKBUDDY_AUTH_DIRNAME)
+}
+
+/** Plugin-owned copy path for one named account inside the account directory. */
+export function ownAccountPath(key: string): string {
+  return join(workbuddyAccountDir(), `${encodeURIComponent(key)}.json`)
 }
 
 const DESKTOP_AUTH_RELATIVE_PATH = ['CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info'] as const
@@ -205,9 +218,27 @@ function parseOwnDocument(text: string): WorkBuddyCredential | undefined {
   const document = parsed as Record<string, unknown>
   if (document['version'] !== OWN_FORMAT_VERSION) return undefined
   if (typeof document['credential'] !== 'object' || document['credential'] === null) return undefined
-  const credential = parseWorkBuddyAuth(JSON.stringify({ auth: document['credential'] }))
-  if (credential === undefined) return undefined
-  return { ...credential, source: 'dsh' }
+  // The owned copy is the plugin's own wire format (WorkBuddyCredential with
+  // camelCase `expiresAtMs`), NOT the desktop document shape — parsing it
+  // through parseWorkBuddyAuth would read `expiresAt` (absent) and zero the
+  // expiry, forcing a needless upstream refresh on every single request.
+  const stored = document['credential'] as Record<string, unknown>
+  const accessToken = typeof stored['accessToken'] === 'string' ? stored['accessToken'] : ''
+  if (accessToken === '') return undefined
+  const refreshExpiresAtMs = typeof stored['refreshExpiresAtMs'] === 'number' ? stored['refreshExpiresAtMs'] : undefined
+  const enterpriseId = optionalString(stored['enterpriseId'])
+  const nickname = optionalString(stored['nickname'])
+  return {
+    accessToken,
+    refreshToken: typeof stored['refreshToken'] === 'string' ? stored['refreshToken'] : '',
+    expiresAtMs: typeof stored['expiresAtMs'] === 'number' ? stored['expiresAtMs'] : 0,
+    ...refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs },
+    domain: optionalString(stored['domain']) ?? '',
+    uid: optionalString(stored['uid']) ?? '',
+    ...enterpriseId === undefined ? {} : { enterpriseId },
+    ...nickname === undefined ? {} : { nickname },
+    source: 'dsh',
+  }
 }
 
 /** Whether a filesystem error reports an absent path. */
@@ -326,6 +357,17 @@ export class WorkBuddyCredentialStore {
     await rm(`${this.ownPath}.lock`, { force: true })
   }
 
+  /**
+   * Take ownership of an already-resolved credential by writing it to the
+   * plugin-owned copy verbatim (no upstream refresh). Used by the multi-account
+   * manager to snapshot a desktop sign-in under a stable account key; the
+   * desktop file is never written.
+   */
+  async seedOwn(credential: WorkBuddyCredential): Promise<void> {
+    const seeded: WorkBuddyCredential = { ...credential, source: 'dsh' }
+    await this.saveOwn(seeded)
+  }
+
   private needsRefresh(credential: WorkBuddyCredential): boolean {
     if (credential.expiresAtMs <= 0) return true
     return Date.now() + this.refreshMarginMs >= credential.expiresAtMs
@@ -360,6 +402,7 @@ export class WorkBuddyCredentialStore {
   }
 
   private async saveOwn(credential: WorkBuddyCredential): Promise<void> {
+    await mkdir(dirname(this.ownPath), { recursive: true })
     await withFileLock(this.ownPath, async () => {
       await writeFileAtomic(this.ownPath, `${JSON.stringify(ownDocument(credential), null, 2)}\n`, {
         mode: 0o600,
@@ -404,5 +447,183 @@ export class WorkBuddyCredentialStore {
       }
     }
     return false
+  }
+}
+
+/**
+ * Multi-account registry. The plugin reuses the WorkBuddy desktop app's
+ * single sign-in, but a user may want several accounts available at once (for
+ * uninterrupted switching). Because the desktop app keeps only one sign-in,
+ * each account is a *snapshot*: the user signs in on the desktop, then imports
+ * the live sign-in under a stable key; the manager stores the refreshed copy
+ * under `$DSH_HOME/.workbuddy-auth/<key>.json` and never writes the desktop
+ * file. Each key maps to its own {@link WorkBuddyCredentialStore}, so token
+ * refresh stays independent per account.
+ *
+ * @module dsh-workbuddy-connect/auth
+ */
+
+/** One managed account's discovery metadata (no token material). */
+export interface WorkBuddyAccountInfo {
+  /** Stable account key (the on-disk filename stem). */
+  key: string
+  /** Optional human label shown in the UI; defaults to the nickname/uid. */
+  label?: string
+  /** Where the stored copy came from. */
+  source: 'desktop' | 'dsh'
+}
+
+/** A managed account plus its live sign-in summary. */
+export interface WorkBuddyAccountStatus extends WorkBuddyAccountInfo {
+  state: 'signed-in' | 'signed-out'
+  nickname?: string
+  domain?: string
+  expiresAtMs?: number
+  refreshExpiresAtMs?: number
+}
+
+/** Options for {@link WorkBuddyAccountManager}. */
+export interface WorkBuddyAccountManagerOptions {
+  /** Performs the upstream token refresh for any owned store. */
+  refresh: (credential: WorkBuddyCredential) => Promise<WorkBuddyRefreshOutcome>
+  /** Optional explicit desktop auth-file path; falls back to platform defaults. */
+  desktopPath?: string
+  /** Refresh this long before expiry; default five minutes. */
+  refreshMarginMs?: number
+}
+
+/**
+ * Discover, import, list, resolve, and remove managed WorkBuddy accounts.
+ *
+ * Discovery is filesystem-based: every `*.json` directly inside
+ * {@link workbuddyAccountDir} whose `version` matches the own format is an
+ * account. Accounts are never enumerated from the desktop app, which holds at
+ * most one sign-in.
+ */
+export class WorkBuddyAccountManager {
+  private readonly refresh: WorkBuddyAccountManagerOptions['refresh']
+  private readonly refreshMarginMs: number
+  private readonly desktopPathOverride: string | undefined
+  private readonly stores = new Map<string, WorkBuddyCredentialStore>()
+
+  constructor(options: WorkBuddyAccountManagerOptions) {
+    this.refresh = options.refresh
+    this.refreshMarginMs = options.refreshMarginMs ?? 5 * 60 * 1000
+    this.desktopPathOverride = options.desktopPath
+  }
+
+  /** Read-only store for one account; lazily constructed and cached. */
+  storeFor(key: string): WorkBuddyCredentialStore {
+    let store = this.stores.get(key)
+    if (store === undefined) {
+      store = new WorkBuddyCredentialStore({
+        // An imported account is a pure snapshot: its store must never fall
+        // back to probing the live desktop file, or a later desktop re-login
+        // to a different account would leak into every stored account. The
+        // sentinel path below never exists, so only the owned copy (plus its
+        // refreshes) is consulted.
+        desktopPath: join(workbuddyAccountDir(), '.no-desktop'),
+        ownPath: ownAccountPath(key),
+        refresh: this.refresh,
+        refreshMarginMs: this.refreshMarginMs,
+      })
+      this.stores.set(key, store)
+    }
+    return store
+  }
+
+  /** The desktop credential store, for reading/importing the live sign-in. */
+  desktopStore(): WorkBuddyCredentialStore {
+    return new WorkBuddyCredentialStore({
+      ...this.desktopPathOverride === undefined ? {} : { desktopPath: this.desktopPathOverride },
+      ownPath: join(workbuddyAccountDir(), '.desktop-import.tmp'),
+      refresh: this.refresh,
+      refreshMarginMs: this.refreshMarginMs,
+    })
+  }
+
+  /** List discovered account keys (filename stems) from the account directory. */
+  async listAccounts(): Promise<string[]> {
+    const dir = workbuddyAccountDir()
+    let entries: string[] = []
+    try {
+      entries = await readdir(dir)
+    } catch (error: unknown) {
+      if (isENOENT(error)) return []
+      throw error
+    }
+    const keys: string[] = []
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue
+      const key = decodeURIComponent(name.slice(0, -'.json'.length))
+      keys.push(key)
+    }
+    return keys
+  }
+
+  private accountInfo(key: string): WorkBuddyAccountInfo {
+    return { key, source: 'dsh' }
+  }
+
+  /**
+   * Snapshot the live desktop sign-in under `key`. Reads the desktop file
+   * (read-only), writes the plugin-owned copy under that key, and returns the
+   * resulting account info. Refuses to overwrite a key that already exists
+   * unless `force` is set, so an accidental re-import does not clobber.
+   */
+  async importFromDesktop(key: string, options?: { label?: string; force?: boolean }): Promise<WorkBuddyAccountInfo> {
+    const trimmed = key.trim()
+    if (trimmed === '') throw new Error('workbuddy: account key must not be empty')
+    const existing = await this.listAccounts()
+    if (existing.includes(trimmed) && options?.force !== true) {
+      throw new Error(`workbuddy: account "${trimmed}" already exists; pass force to overwrite`)
+    }
+    const store = this.desktopStore()
+    const credential = await store.current()
+    if (credential === undefined) {
+      throw new Error('workbuddy: no signed-in WorkBuddy account found in the desktop app; sign in there first')
+    }
+    const target = this.storeFor(trimmed)
+    await target.seedOwn(credential)
+    return this.accountInfo(trimmed)
+  }
+
+  /** Live sign-in summary for one account, or signed-out when absent/broken. */
+  async statusOf(key: string): Promise<WorkBuddyAccountStatus> {
+    if (!(await this.listAccounts()).includes(key)) {
+      return { ...this.accountInfo(key), state: 'signed-out' }
+    }
+    const summary = await this.storeFor(key).status()
+    if (summary.state !== 'signed-in') return { ...this.accountInfo(key), state: 'signed-out' }
+    return {
+      ...this.accountInfo(key),
+      state: 'signed-in',
+      ...summary.nickname === undefined ? {} : { nickname: summary.nickname },
+      ...summary.domain === undefined || summary.domain === '' ? {} : { domain: summary.domain },
+      ...summary.expiresAtMs === undefined ? {} : { expiresAtMs: summary.expiresAtMs },
+      ...summary.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs: summary.refreshExpiresAtMs },
+      source: summary.source ?? 'dsh',
+    }
+  }
+
+  /** Sign-in summary for every discovered account. */
+  async statuses(): Promise<WorkBuddyAccountStatus[]> {
+    const keys = await this.listAccounts()
+    return Promise.all(keys.map(key => this.statusOf(key)))
+  }
+
+  /** Resolve the freshest credential for one account, refreshing on demand. */
+  async resolve(key: string): Promise<WorkBuddyCredential> {
+    if (!(await this.listAccounts()).includes(key)) {
+      throw new Error(`workbuddy: no such account "${key}"; import it with "dsh-workbuddy-connect import ${key}"`)
+    }
+    return this.storeFor(key).resolve()
+  }
+
+  /** Remove one account's plugin-owned copy; the desktop app is untouched. */
+  async remove(key: string): Promise<void> {
+    await rm(ownAccountPath(key), { force: true })
+    await rm(`${ownAccountPath(key)}.lock`, { force: true })
+    this.stores.delete(key)
   }
 }

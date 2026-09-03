@@ -72,6 +72,20 @@ dsh --profile dsh-tui
 
 `dsh plugin --profile <web|desktop|dsh-tui> exec dsh-workbuddy-connect status`：登录状态与剩余积分（`--json` 输出机器可读格式；另有 `doctor` 诊断、`logout` 清理凭据）。
 
+## 多账号（可选）
+
+插件默认沿用桌面 App 的单一登录。要多个账号共存切换（如一个号额度耗尽换另一个），用快照式导入：
+
+```sh
+# 1. 在 WorkBuddy 桌面 App 登录账号 A，然后：
+dsh-workbuddy-connect import a            # 快照当前桌面登录为账号 a
+# 2. 桌面 App 切登账号 B，然后：
+dsh-workbuddy-connect import b
+dsh-workbuddy-connect accounts            # 查看已导入账号；remove <key> 可删除
+```
+
+再在插件设置里把 `accounts` 配成 `["a", "b"]` 并重启 DSH，模型选择器里会出现 `WorkBuddy · a`、`WorkBuddy · b` 两组模型，各自独立刷新令牌、互不干扰。每个账号是导入时刻的快照（桌面文件只读、绝不回写），长期使用靠 refresh token 自动续期；若某账号 refresh token 失效，重新在桌面登录该账号后再 `import <key> --force` 覆盖即可。
+
 ## 已知限制
 
 - 在 macOS 的 DSH Web / Desktop / TUI profile（`0.1.1-rc.2`+、Node 22+）下验证通过。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE` 指定实际位置。

@@ -32,6 +32,19 @@ export interface WorkBuddyWebModelBadge {
   credits?: string
 }
 
+/** One managed account rendered by the plugin card. */
+export interface WorkBuddyWebAccount {
+  key: string
+  label?: string
+  state: 'signed-in' | 'signed-out'
+  nickname?: string
+  domain?: string
+  expiresAt?: number
+  /** Aggregated remaining credit for this account, when available. */
+  credits?: WorkBuddyWebCredits
+  creditsError?: string
+}
+
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebStatus =
   | { status: 'signed-out' }
@@ -45,5 +58,7 @@ export type WorkBuddyWebStatus =
     creditsError?: string
     /** Billing convenience facts for the models the plugin serves. */
     models?: readonly WorkBuddyWebModelBadge[]
+    /** Managed accounts, present only in multi-account mode. */
+    accounts?: readonly WorkBuddyWebAccount[]
   }
   | { status: 'error'; message: string }
