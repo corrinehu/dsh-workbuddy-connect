@@ -10,13 +10,13 @@ Brings every model in the WorkBuddy desktop app (GLM-5.3, GLM-5.2, DeepSeek-V4-P
 
 ![WorkBuddy models in the DSH model picker](assets/1.png)
 
-- **Image input**: image messages are admitted per the upstream's per-model capability flag — most models (GLM-5.3-Flash, GLM-5.2, the DeepSeek-V4 series, etc.) accept pasted or dragged-in images, while text-only models (e.g. GLM-5.1) keep a clear refusal.
+- **Image input**: most models accept images — paste or drop one straight into the conversation (GLM-5.3-Flash, GLM-5.2, the DeepSeek-V4 series, and more); the few text-only models (e.g. GLM-5.1) clearly say so.
 
-- **Thinking effort**: the model picker exposes the per-model effort levels the upstream declares (e.g. GLM-5.3 offers low / high / xhigh, GLM-5.3-Flash low / high / max), forwarded as `reasoning_effort` on the wire.
+- **Thinking effort**: the model picker lets you switch the thinking effort on models that support it — GLM-5.3 offers low / high / xhigh and GLM-5.3-Flash offers low / high / max. Models without the option cannot be adjusted and use WorkBuddy's default.
 
-- **Limited-time free at a glance**: the status card marks models that are currently free / limited-time free / on a night discount (following the upstream `credits` and `tags` live).
+- **Limited-time free at a glance**: the status card marks models that are currently free / limited-time free / on a night discount (per the WorkBuddy service data, synced each time DSH starts).
 
-- **Rate ratio at a glance**: every model in the selection list carries its credits multiplier on the name (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`), in both the `/model` popup and the composer seat; the status card adds a localized rate line too. The rate is display-only — requests always use the model id.
+- **Rate at a glance**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown. The rate is display-only and never affects requests.
 
 - **Info at a glance**: Settings → Plugins → DSH WorkBuddy Connect card
 
