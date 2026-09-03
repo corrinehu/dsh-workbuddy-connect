@@ -3,7 +3,7 @@
 
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { WorkBuddyAccountManager, WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
+import { keyHash, WorkBuddyAccountManager, WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -160,8 +160,11 @@ async function accounts(jsonOutput: boolean): Promise<number> {
     return 0
   }
   for (const entry of statuses) {
+    // Same shape as the settings panel row: the md5 storage address, then the
+    // identity, so a listed account can be matched to its snapshot file.
     const who = entry.nickname ?? entry.key
-    process.stdout.write(`- ${entry.key}${entry.state === 'signed-in' ? `  (${who})` : '  (signed-out)'}\n`)
+    const address = keyHash(entry.key)
+    process.stdout.write(`- ${address} · ${who}${entry.state === 'signed-in' ? '' : '  (signed-out)'}\n`)
   }
   return 0
 }

@@ -37,7 +37,7 @@ it('labels each card row with the md5 storage address and the identity', async (
     client: { fetchCredits: async () => { throw new Error('credits unavailable in this test') } },
     models: (): WorkBuddyModelInfo[] => [],
   })
-  expect(status.status).toBe('signed-in')
+  if (status.status !== 'signed-in') throw new Error('expected a signed-in status document')
   const byKey = new Map((status.accounts ?? []).map(account => [account.key, account]))
   expect(byKey.get('jmglsi')?.label).toBe(`${keyHash('jmglsi')} · jmglsi`)
   expect(byKey.get('miaoniang')?.label).toBe(`${keyHash('miaoniang')} · 喵娘_认真看置顶`)
