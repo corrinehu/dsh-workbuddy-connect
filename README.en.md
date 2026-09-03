@@ -30,6 +30,16 @@ Expand the card to see the account, token validity, and remaining credit.
 
 Prerequisite: the WorkBuddy desktop app is installed and signed in (the plugin reuses the app's sign-in state and follows account switches automatically).
 
+**Match the plugin version to your DSH core** — a mismatched combination fails to start DSH:
+
+| Plugin | Required DSH core | Desktop app |
+|---|---|---|
+| **0.3.0+** | `0.1.2-rc.1` or newer | `2.0.5`+ recommended |
+| **0.2.6** | `0.1.1-rc.2` (older line) | `2.0.3` / `2.0.4` |
+
+- On DSH `0.1.2-rc.1` or newer, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`
+- Still on DSH `0.1.1-rc.2`? Stay on the older release: `dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
+
 The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI**. Pick the install command that matches the profile you use.
 
 ```sh
@@ -54,7 +64,9 @@ dsh plugin --profile dsh-tui add dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
 
-> Note: the `dsh-tui` profile requires pnpm 11 to install packages (a different pnpm on PATH fails with `ERR_PNPM_UNEXPECTED_STORE` — use `npx pnpm@11`); verified on dsh `0.1.2-rc.1`.
+> **TUI users should stay on 0.2.6 for now**: the terminal UI package `@deepseek-harness-tui/dsh-tui` (latest: 0.10.0-beta.4) does not support DSH `0.1.2-rc.1` yet — with this plugin installed, DSH fails to start with `events is not iterable` (the fix is already committed upstream and awaits a release). Until a compatible release ships, keep DSH `0.1.1-rc.2` and plugin `0.2.6` on the TUI profile; once the terminal UI ships a version supporting the new core, upgrading it unlocks 0.3.0.
+
+> Note: the `dsh-tui` profile requires pnpm 11 to install packages (a different pnpm on PATH fails with `ERR_PNPM_UNEXPECTED_STORE` — use `npx pnpm@11`).
 
 After installing, switch to a WorkBuddy model in the model picker of the interface you chose. On Web, the settings card (Settings → Plugins → DSH WorkBuddy Connect) shows the account, token validity, and remaining credit; on TUI, configure `authFile` in `/settings`.
 
@@ -64,7 +76,7 @@ After installing, switch to a WorkBuddy model in the model picker of the interfa
 
 ## Known limitations
 
-- Verified on macOS with the DSH Web / Desktop / TUI profile (`0.1.2-rc.1`+, Node 22+). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` at the actual file.
+- Verified on macOS with the DSH Web / Desktop profiles (`0.1.2-rc.1`+, Node 22+); TUI pending a terminal-UI release adapted to 0.1.2 (see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` at the actual file.
 - Relies on WorkBuddy client interfaces (not a public API); the plugin may need updates as WorkBuddy changes.
 
 ## Disclaimer
