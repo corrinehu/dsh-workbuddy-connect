@@ -34,9 +34,13 @@ export default [
     dts: true,
     clean: true,
     define: VERSION_DEFINE,
+    noExternal: [/^@deepseek-ai\/dsh-llm-pi-ai/, /^@earendil-works\/pi-ai/],
     deps: {
       neverBundle: [
-        '@earendil-works/pi-ai',
+        // dsh-llm-pi-ai and pi-ai are bundled on purpose: the 0.1.2-alpha line
+        // rewrote the adapter constructor to a dict-shaped config, so the
+        // rc.2-shaped adapter must travel with the plugin (see postbuild.mjs
+        // for the one-symbol shim that keeps it loading on alpha hosts).
         '@deepseek-ai/schemastery',
         '@deepseek-ai/cordis',
         '@deepseek-ai/dsh-atomic-write',
@@ -44,7 +48,6 @@ export default [
         '@deepseek-ai/dsh-home-paths',
         '@deepseek-ai/dsh-host-webserver',
         '@deepseek-ai/dsh-llm',
-        '@deepseek-ai/dsh-llm-pi-ai',
         '@deepseek-ai/dsh-settings',
       ],
     },
