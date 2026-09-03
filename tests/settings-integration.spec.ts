@@ -67,18 +67,15 @@ describe('WorkBuddy Host settings integration', () => {
     expect(models.map(model => model.id)).toContain('hy4-preview')
     expect(models.map(model => model.id)).toContain('glm-5.3')
 
-    // The billing rate rides the display name (and the advisory description)
-    // so both the /model popup and the composer seat show it; the id and the
-    // request path are untouched by this display-only decoration.
+    // The billing rate AND the declared promo badges ride the display name:
+    // since DSH 0.1.2 the composer seat renders model.name only, so any copy
+    // left in `description` would vanish there (and duplicate in the /model
+    // popup). The id and the request path are untouched by this decoration.
     const byId = new Map(models.map(model => [model.id, model]))
-    expect(byId.get('glm-5.2')?.name).toBe('GLM-5.2 · x0.79')
+    expect(byId.get('glm-5.2')?.name).toBe('GLM-5.2 · x0.79 · 夜间折扣')
     expect(byId.get('glm-5.1')?.name).toBe('GLM-5.1 · x0.79')
     expect(byId.get('auto')?.name).toBe('Auto')
-    // The rate lives on the name only: the /model popup renders name AND
-    // description, so a description copy would display it twice there.
-    // description instead carries the declared promo badges, when present.
-    expect(byId.get('glm-5.2')?.description).toBe('夜间折扣')
-    expect(byId.get('glm-5.3')?.description).toBeUndefined()
+    expect(byId.get('glm-5.2')?.description).toBeUndefined()
 
     // Thinking controls are declared-set-only: models whose upstream row
     // carries `supportedEfforts` expose exactly those efforts; rows without a

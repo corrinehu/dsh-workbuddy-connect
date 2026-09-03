@@ -7,7 +7,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { installSettingsSection } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import { WorkBuddyAccountManager, WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
 import { WorkBuddyCatalog } from './catalog.ts'
@@ -72,7 +73,7 @@ export const name = 'llm-workbuddy'
 export const inject = ['llm']
 
 /** Settings namespace reserved for the future configuration card. */
-export const WORKBUDDY_SETTINGS_NS = settingsNamespace('workbuddy')
+export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 
 /** Plugin configuration. */
 export interface Config {
@@ -125,15 +126,33 @@ export function apply(ctx: Context, config: Config): void {
   // not the raw plugin config, decides multi-account mode. The runtime is
   // booted from that callback; the promise merely lets the registration
   // path wait for it deterministically.
-  const settingsReady = new Promise<void>(resolve => {
-    installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
-      setSource(source) { current = source },
-      onChange() {
-        const next = current().authFile
-        if (store instanceof WorkBuddyCredentialStore) store.setDesktopPath(next)
-        resolve()
-      },
-    })
+  // DSH 0.1.2-rc.1 moved the section installer onto the settings service
+  // (`settings.installSection`) and dropped the free function; 0.1.2-alpha and
+  // 0.1.1-rc.2 only export the free function. The hooks are shared, so both
+  // paths drive the same settingsReady promise and the same effective config.
+  const sectionHooks = {
+    setSource(source: () => Config) { current = source },
+    onChange() {
+      const next = current().authFile
+      if (store instanceof WorkBuddyCredentialStore) store.setDesktopPath(next)
+      settingsReadyResolve()
+    },
+  }
+  let settingsReadyResolve!: () => void
+  const settingsReady = new Promise<void>(resolve => { settingsReadyResolve = resolve })
+  // The settings service is always touched through inject() — cordis refuses
+  // bare property reads outside a declared dependency, on the host as in tests.
+  ctx.inject(['settings'], settingsCtx => {
+    const service = settingsCtx.settings as unknown as {
+      installSection?: typeof installSettingsSection
+    }
+    if (typeof service.installSection === 'function') {
+      // 0.1.2-rc.1+ path: the installer rides the settings service.
+      service.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, sectionHooks)
+    } else {
+      // 0.1.1-rc.2 / 0.1.2-alpha path: the free function.
+      installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, sectionHooks)
+    }
   })
 
   const start = (active: Config): void => {
@@ -163,7 +182,13 @@ export function apply(ctx: Context, config: Config): void {
     // webServer service is optional (a headless profile serves no browser).
     // Multi-account mode also exposes removal: deleting a snapshot and, in the
     // same breath, dropping the key from the persisted accounts list so the
-    // next start does not resurrect a provider for a deleted credential.
+    // next start does not resurrect a provider for a deleted credential. The
+    // settings handle arrives via inject() (cordis forbids bare reads) and is
+    // captured into `settingsApi` for the POST-time removal callback.
+    let settingsApi: { update: (ns: typeof WORKBUDDY_SETTINGS_NS, patch: Partial<Config>) => Promise<void> } | undefined
+    ctx.inject(['settings'], settingsCtx => {
+      settingsApi = settingsCtx.settings as unknown as NonNullable<typeof settingsApi>
+    })
     const routeOptions: WorkBuddyStatusRouteOptions = {
       store: activeStore,
       client,
@@ -175,7 +200,7 @@ export function apply(ctx: Context, config: Config): void {
         await activeStore.remove(key)
         const remaining = (current().accounts ?? []).filter(entry => entry !== key)
         try {
-          await ctx.settings?.update(WORKBUDDY_SETTINGS_NS, { accounts: remaining })
+          await settingsApi?.update(WORKBUDDY_SETTINGS_NS, { accounts: remaining })
         } catch (error: unknown) {
           // The snapshot is already gone; a stale accounts entry only means
           // the next start logs a missing-credential warning for that key.

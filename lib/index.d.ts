@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import z from "@deepseek-ai/schemastery";
+import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 import { GenerateOptions, LlmAdapter, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, PreparedAdapterCall, ResolvedRetryPolicy, RetryPolicyConfig, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { Context, Service } from "@deepseek-ai/cordis";
 import { Duplex, Readable, Writable } from "stream";
@@ -49543,7 +49544,7 @@ declare const name = "llm-workbuddy";
 /** The model registry required before the provider can register. */
 declare const inject: string[];
 /** Settings namespace reserved for the future configuration card. */
-declare const WORKBUDDY_SETTINGS_NS: import("@deepseek-ai/dsh-settings").SettingsNamespace;
+declare const WORKBUDDY_SETTINGS_NS: SettingsNamespace;
 /** Plugin configuration. */
 interface Config {
   /** Explicit WorkBuddy desktop auth-file path, overriding env and platform defaults. */
