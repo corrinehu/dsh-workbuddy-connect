@@ -1,7 +1,6 @@
 import z from "@deepseek-ai/schemastery";
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
 import { Context } from "@deepseek-ai/cordis";
-import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 import { AttachmentStore } from "@deepseek-ai/dsh-attachment";
 //#region src/upstream.d.ts
 /** WorkBuddy region selected by the credential's login domain. */
@@ -408,19 +407,8 @@ declare function isHeartbeatProcessAlive(heartbeat: WorkBuddyHostHeartbeat): boo
 declare const name = "llm-workbuddy";
 /** The model registry required before the provider can register. */
 declare const inject: string[];
-/**
- * Settings namespace owning the configuration card.
- *
- * DSH 0.1.2 dropped the `settingsNamespace()` branding function: a namespace is
- * now a nominal string, validated by the type system where it is used rather
- * than at runtime by a function call. The brand is compile-time only, so this
- * stays the plain string it always was — every comparison, descriptor lookup,
- * and `dsh` config file still sees `'workbuddy'`. It is cast once here so the
- * public constant carries the seam's type without pulling the brand helper
- * into this package (upstream DSH plugins, `dsh-llm-pi-ai` included, pass
- * their namespaces as plain string literals).
- */
-declare const WORKBUDDY_SETTINGS_NS: SettingsNamespace;
+/** Settings namespace reserved for the future configuration card. */
+declare const WORKBUDDY_SETTINGS_NS: import("@deepseek-ai/dsh-settings").SettingsNamespace;
 /** Plugin configuration. */
 interface Config {
   /** Explicit WorkBuddy desktop auth-file path, overriding env and platform defaults. */
