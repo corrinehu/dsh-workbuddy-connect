@@ -21,7 +21,7 @@
 - **思考强度**：模型选择器里可为支持的模型切换思考强度，例如 GLM-5.3 可选 low / high / xhigh，GLM-5.3-Flash 可选 low / high / max；没有出现选项的模型不支持调整，使用 WorkBuddy 的默认档位。
 
 
-- **限时免费一目了然**：促销徽章（限时免费、夜间折扣）直接跟在模型名后面（如 `Hy4 preview · x0.00 · 限时免费`），选模型时一眼可见；设置卡片里也会汇总当前有优惠的模型。以 WorkBuddy 服务端的数据为准，每次启动 DSH 时同步。
+- **徽章展示**：促销徽章（限时免费、夜间折扣）直接跟在模型名后面（如 `Hy4 preview · x0.00 · 限时免费`），选模型时一眼可见；设置卡片里也会汇总当前有优惠的模型。以 WorkBuddy 服务端的数据为准，每次启动 DSH 时同步。
 
 
 - **费率比例直接可见**：模型选择列表里每个模型名后直接显示积分倍率（如 `GLM-5.2 · x0.79`、`Hy3 · x0.00`），`/model` 弹窗与输入框的模型下拉都能看到。倍率只是显示，不影响实际请求。
@@ -74,7 +74,7 @@ dsh plugin --profile dsh-tui add dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
 
-> **TUI 用户请先留在 0.2.6**：终端界面插件 `@deepseek-harness-tui/dsh-tui` 目前最新版（0.10.0-beta.4）还不支持 DSH `0.1.2-rc.1`——安装本插件后启动会报 `events is not iterable` 崩溃（该问题的修复已提交，等作者发新版）。在新版发布之前，TUI 用户请继续使用 DSH `0.1.1-rc.2` 和本插件 `0.2.6`；等它发了支持新核心的版本，升级后即可使用 0.3.0。
+> **TUI 用户请先留在 0.2.6**：实测在 TUI 上安装本插件 0.3.0 会导致启动崩溃（报 `events is not iterable`），原因是终端界面插件 `@deepseek-harness-tui/dsh-tui` 还没适配 DSH 新核心（修复已提交，尚未发版）。建议 TUI 用户暂时继续使用 DSH `0.1.1-rc.2` 和本插件 `0.2.6`，等终端界面插件发布适配版本后再升级 0.3.0。
 
 > 提示：`dsh-tui` profile 需用 pnpm 11 安装（PATH 里是其他版本会报 `ERR_PNPM_UNEXPECTED_STORE`，用 `npx pnpm@11` 即可）。
 

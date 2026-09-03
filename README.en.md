@@ -64,7 +64,7 @@ dsh plugin --profile dsh-tui add dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
 
-> **TUI users should stay on 0.2.6 for now**: the terminal UI package `@deepseek-harness-tui/dsh-tui` (latest: 0.10.0-beta.4) does not support DSH `0.1.2-rc.1` yet — with this plugin installed, DSH fails to start with `events is not iterable` (the fix is already committed upstream and awaits a release). Until a compatible release ships, keep DSH `0.1.1-rc.2` and plugin `0.2.6` on the TUI profile; once the terminal UI ships a version supporting the new core, upgrading it unlocks 0.3.0.
+> **TUI users should stay on 0.2.6**: in our testing, installing this plugin 0.3.0 on the TUI profile crashes startup with `events is not iterable` — the terminal UI package (`@deepseek-harness-tui/dsh-tui`) has not been adapted to the new DSH core yet (the fix is committed upstream, unreleased). We recommend TUI users keep DSH `0.1.1-rc.2` and plugin `0.2.6` for now, and upgrade to 0.3.0 once the terminal UI ships an adapted release.
 
 > Note: the `dsh-tui` profile requires pnpm 11 to install packages (a different pnpm on PATH fails with `ERR_PNPM_UNEXPECTED_STORE` — use `npx pnpm@11`).
 
