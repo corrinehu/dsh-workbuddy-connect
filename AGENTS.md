@@ -23,4 +23,4 @@
 
 ## 发布规矩（同工作区根 AGENTS.md）
 
-未经明确指令不得 `npm publish` / 打 release tag；发布前 `pnpm run check` 全过，顺序固定：**先升版本号，再 check/构建，最后发布**。
+未经明确指令不得 `npm publish` / 打 release tag；**push 到远端（含普通 main 推送）必须先经用户同意，本地 commit 可自主**；发布前 `pnpm run check` 全过，顺序固定：**先升版本号，再 check/构建，最后发布**。
