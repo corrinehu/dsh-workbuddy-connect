@@ -15,16 +15,16 @@
 ![WorkBuddy 模型出现在 DSH 模型选择器中](assets/1.png)
 
 
-- **图片输入**：按上游逐模型声明的能力放行图片——绝大多数模型（含 GLM-5.3-Flash、GLM-5.2、DeepSeek-V4 系列等）可直接粘贴或拖入图片；个别纯文本模型（如 GLM-5.1）按上游声明仍会明确提示不支持。
+- **图片输入**：大部分模型支持发图，在对话里直接粘贴或拖入图片即可（GLM-5.3-Flash、GLM-5.2、DeepSeek-V4 系列等）；少数只支持文字的模型（如 GLM-5.1）会明确提示不支持。
 
 
-- **思考强度**：按上游每个模型声明的 `supportedEfforts` 提供思考等级选项（如 GLM-5.3 支持 low / high / xhigh，GLM-5.3-Flash 支持 low / high / max），在 DSH 模型选择器里即可切换，请求以 `reasoning_effort` 转发。
+- **思考强度**：模型选择器里可为支持的模型切换思考强度，例如 GLM-5.3 可选 low / high / xhigh，GLM-5.3-Flash 可选 low / high / max；没有出现选项的模型不支持调整，使用 WorkBuddy 的默认档位。
 
 
-- **限时免费一目了然**：状态卡片会标注当前免费 / 限时免费 / 夜间折扣的模型（跟随上游 `credits` 与 `tags` 实时更新）。
+- **徽章展示**：促销徽章（限时免费、夜间折扣）直接跟在模型名后面（如 `Hy4 preview · x0.00 · 限时免费`），选模型时一眼可见；设置卡片里也会汇总当前有优惠的模型。以 WorkBuddy 服务端的数据为准，每次启动 DSH 时同步。
 
 
-- **费率比例直接可见**：模型选择列表里每个模型名后直接显示积分倍率（如 `GLM-5.2 · x0.79`、`Hy3 · x0.00`），`/model` 弹窗与 composer 下拉都能看到；设置卡片里也补充了倍率说明。倍率只影响显示，发送请求仍使用模型 id。
+- **费率比例**：模型选择列表里每个模型名后直接显示积分倍率（如 `GLM-5.2 · x0.79`、`Hy3 · x0.00`），`/model` 弹窗与输入框的模型下拉都能看到。倍率只是显示，不影响实际请求。
 
 
 - **信息查看**：设置 → 插件 → DSH WorkBuddy Connect 卡片
@@ -39,6 +39,16 @@
 ## 安装
 
 前置：已安装并登录 WorkBuddy 桌面 App（插件复用 App 的登录状态，账号切换自动跟随）。
+
+**版本对应（重要）**：本插件与 DSH 核心版本一一对应，不可混用——不匹配的组合会导致 DSH 启动失败：
+
+| 插件版本 | 要求的 DSH 核心 | 桌面 App |
+|---|---|---|
+| **0.3.0+** | `0.1.2-rc.1` 及以上 | 建议 `2.0.5`+ |
+| **0.2.6** | `0.1.1-rc.2`（旧线） | `2.0.3` / `2.0.4` |
+
+- DSH `0.1.2-rc.1` 及以上的用户，正常安装最新版即可：`dsh plugin --profile web add dsh-workbuddy-connect`
+- 还在用 DSH `0.1.1-rc.2` 的用户，请安装旧版本并停留在 `0.2.6`：`dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
 
 插件在三种 DSH 界面下均可运行：**Web**、**Desktop**、**TUI**。根据你使用的 profile 选对应命令安装。
 
@@ -64,7 +74,9 @@ dsh plugin --profile dsh-tui add dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
 
-> 提示：`dsh-tui` profile 需用 pnpm 11 安装（PATH 里是其他版本会报 `ERR_PNPM_UNEXPECTED_STORE`，用 `npx pnpm@11` 即可）；已验证 dsh `0.1.2-rc.1`。
+> **TUI 用户请先留在 0.2.6**：实测在 TUI 上安装本插件 0.3.0 会导致启动崩溃（报 `events is not iterable`），原因是终端界面插件 `@deepseek-harness-tui/dsh-tui` 还没适配 DSH 新核心（修复已提交，尚未发版）。建议 TUI 用户暂时继续使用 DSH `0.1.1-rc.2` 和本插件 `0.2.6`，等终端界面插件发布适配版本后再升级 0.3.0。
+
+> 提示：`dsh-tui` profile 需用 pnpm 11 安装（PATH 里是其他版本会报 `ERR_PNPM_UNEXPECTED_STORE`，用 `npx pnpm@11` 即可）。
 
 安装后，在对应界面的模型选择器里切换到 WorkBuddy 模型即可使用；Web 下设置卡片（设置 → 插件 → DSH WorkBuddy Connect）可查看账号信息、令牌有效期与剩余积分，TUI 下可在 `/settings` 里配置 `authFile`。
 
@@ -74,7 +86,7 @@ dsh --profile dsh-tui
 
 ## 已知限制
 
-- 在 macOS 的 DSH Web / Desktop / TUI profile（`0.1.2-rc.1`+、Node 22+）下验证通过。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE` 指定实际位置。
+- 在 macOS 的 DSH Web / Desktop profile（`0.1.2-rc.1`+、Node 22+）下验证通过；TUI 待终端界面插件发布 0.1.2 适配版后验证（见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE` 指定实际位置。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
 
 ## 免责声明
