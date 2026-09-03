@@ -186,8 +186,23 @@ export function apply(ctx: Context, config: Config): void {
     ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, routeOptions))
 
     void shim.ready
-      .then(() => {
+      .then(async () => {
         if (stopped) return
+
+        // Prefer each account's snapshot nickname in the provider display
+        // name (the picker then shows e.g. `WorkBuddy · 喵娘_认真看置顶`
+        // instead of the raw import key); keys stay the routing identity, so
+        // a missing nickname simply falls back to the key.
+        const nicknameByKey = new Map<string, string>()
+        if (activeStore instanceof WorkBuddyAccountManager) {
+          try {
+            for (const status of await activeStore.statuses()) {
+              if (status.nickname !== undefined) nicknameByKey.set(status.key, status.nickname)
+            }
+          } catch {
+            // Display names fall back to keys; registration must not depend on it.
+          }
+        }
 
         let registrations: Array<() => void> = []
         const registerOne = (
@@ -221,7 +236,8 @@ export function apply(ctx: Context, config: Config): void {
         } else {
           for (const entry of accountEntries) {
             const providerId = `${WORKBUDDY_PROVIDER}:${entry.key}`
-            registerOne(providerId, `WorkBuddy · ${entry.key}`, entry.key)
+            const nickname = nicknameByKey.get(entry.key)
+            registerOne(providerId, `WorkBuddy · ${nickname ?? entry.key}`, entry.key)
           }
         }
 

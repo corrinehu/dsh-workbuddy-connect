@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -137,5 +137,40 @@ describe('WorkBuddy Host settings integration', () => {
     // The exact-model metadata must echo the multi-account provider id: the
     // host drops a provider whose resolveModelInfo mismatches its registry id.
     expect(resolved.provider).toBe('workbuddy:jmglsi')
+  })
+
+  it('shows the snapshot nickname in the provider display name', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-nick-'))
+    vi.stubEnv('DSH_HOME', root)
+    // One imported snapshot whose credential carries a (non-ASCII) nickname.
+    const authDir = join(root, '.workbuddy-auth')
+    await mkdir(authDir, { recursive: true })
+    await writeFile(join(authDir, 'miaoniang.json'), JSON.stringify({
+      version: 1,
+      credential: {
+        accessToken: 'at', refreshToken: 'rt', expiresAtMs: Date.now() + 3600_000,
+        domain: 'www.workbuddy.cn', uid: 'uid-miao', source: 'dsh', nickname: '喵娘_认真看置顶',
+      },
+    }))
+    const ctx = new Context()
+    context = ctx
+    class SeededSettings extends MemorySettings {
+      protected override load(): Promise<Record<string, unknown>> {
+        return Promise.resolve({
+          [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accounts: ['miaoniang'] },
+        })
+      }
+    }
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SeededSettings)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy:miaoniang')
+    })
+    const provider = ctx.llm.listProviders().find(entry => entry.id === 'workbuddy:miaoniang')
+    // The picker groups by display name: the snapshot nickname wins, the key
+    // remains only the routing identity.
+    expect(provider?.name).toBe('WorkBuddy · 喵娘_认真看置顶')
   })
 })

@@ -63,7 +63,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   multiAccountCount: '已连接 {count} 个账号',
   multiAccountEmpty: '尚未导入任何账号；在桌面 App 登录后运行 `dsh-workbuddy-connect import <key>`。',
   removeAccount: '删除',
-  confirmRemoveAccount: '确认删除？',
+  confirmRemoveAccount: '确认删除',
   removingAccount: '删除中…',
   removeAccountFailed: '删除失败：{message}',
 }
