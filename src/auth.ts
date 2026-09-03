@@ -96,8 +96,13 @@ export function workbuddyAccountDir(): string {
  * round-trip bugs. The key is recorded inside the document instead, so the
  * directory is a content-addressed bag rather than a keyed index.
  */
+/** The eight-hex-digit content address of an account key. */
+export function keyHash(key: string): string {
+  return createHash('md5').update(key).digest('hex').slice(0, 8)
+}
+
 export function snapshotName(key: string): string {
-  return `${createHash('md5').update(key).digest('hex').slice(0, 8)}.json`
+  return `${keyHash(key)}.json`
 }
 
 /** Plugin-owned copy path for one named account inside the account directory. */

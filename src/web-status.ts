@@ -9,7 +9,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { WorkBuddyAccountManager } from './auth.ts'
+import { keyHash, WorkBuddyAccountManager } from './auth.ts'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import { normalizeCredits } from './upstream.ts'
@@ -77,8 +77,13 @@ export async function workBuddyWebStatus(
     if (statuses.length === 0) return { status: 'signed-out' }
     const accounts: WorkBuddyWebAccount[] = []
     for (const entry of statuses) {
+      const who = entry.nickname ?? entry.key
       const account: WorkBuddyWebAccount = {
         key: entry.key,
+        // The panel shows the storage address alongside the identity, so a
+        // snapshot on disk can be matched to its row without opening the
+        // account directory.
+        label: `${keyHash(entry.key)} · ${who}`,
         state: entry.state,
         ...entry.nickname === undefined ? {} : { nickname: entry.nickname },
         ...entry.domain === undefined || entry.domain === '' ? {} : { domain: entry.domain },
