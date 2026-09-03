@@ -106,6 +106,7 @@ workbuddy:
 
 ## 已知限制
 
+- **从旧版（单账户）升级**：升级前用旧 provider `workbuddy` 选过模型的会话，重启后恢复运行会报 `Unknown provider: workbuddy`——在该会话里重新选一次模型即可；或把 `~/.dsh/storages/session_projcache/sessions/*.json` 里 `modelSelection` 下的 `provider: "workbuddy"` 改成 `workbuddy:<key>`。
 - 在 macOS 的 DSH Web / Desktop / TUI profile 下验证通过（desktop host `0.1.2-alpha.1` 真机回归）。host 兼容 `0.1.1-rc.2` 与 `0.1.2` 系：设置节安装按 host 能力自动选择 `settings.installSection`（0.1.2-rc.1+）或自由函数（更早），优惠徽章与费率拼进模型名（0.1.2 的 composer 只渲染 name）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE` 指定实际位置。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
 
