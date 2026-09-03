@@ -109,7 +109,7 @@ describe('WorkBuddy Host settings integration', () => {
     class SeededSettings extends MemorySettings {
       protected override load(): Promise<Record<string, unknown>> {
         return Promise.resolve({
-          [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accounts: ['jmglsi', 'miaoniang'], defaultAccount: 'jmglsi' },
+          [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accounts: ['alice', 'bob'], defaultAccount: 'alice' },
         })
       }
     }
@@ -119,21 +119,21 @@ describe('WorkBuddy Host settings integration', () => {
 
     await vi.waitFor(() => {
       const ids = ctx.llm.listProviders().map(provider => provider.id)
-      expect(ids).toContain('workbuddy:jmglsi')
-      expect(ids).toContain('workbuddy:miaoniang')
+      expect(ids).toContain('workbuddy:alice')
+      expect(ids).toContain('workbuddy:bob')
     })
     // The legacy single-account provider must NOT be registered alongside.
     expect(ctx.llm.listProviders().map(provider => provider.id)).not.toContain('workbuddy')
 
-    const jmglsi = ctx.llm.listProviders().find(provider => provider.id === 'workbuddy:jmglsi')
-    expect(jmglsi?.name).toBe('WorkBuddy · jmglsi')
+    const alice = ctx.llm.listProviders().find(provider => provider.id === 'workbuddy:alice')
+    expect(alice?.name).toBe('WorkBuddy · alice')
 
-    const models = await ctx.llm.listModels('workbuddy:jmglsi')
+    const models = await ctx.llm.listModels('workbuddy:alice')
     expect(models).toHaveLength(15)
-    const resolved = await ctx.llm.resolveModelInfo('workbuddy:jmglsi', 'auto')
+    const resolved = await ctx.llm.resolveModelInfo('workbuddy:alice', 'auto')
     // The exact-model metadata must echo the multi-account provider id: the
     // host drops a provider whose resolveModelInfo mismatches its registry id.
-    expect(resolved.provider).toBe('workbuddy:jmglsi')
+    expect(resolved.provider).toBe('workbuddy:alice')
   })
 
   it('shows the snapshot nickname in the provider display name', async () => {
@@ -142,11 +142,11 @@ describe('WorkBuddy Host settings integration', () => {
     // One imported snapshot whose credential carries a (non-ASCII) nickname.
     const authDir = join(root, '.workbuddy-auth')
     await mkdir(authDir, { recursive: true })
-    await writeFile(join(authDir, 'miaoniang.json'), JSON.stringify({
+    await writeFile(join(authDir, 'bob.json'), JSON.stringify({
       version: 1,
       credential: {
         accessToken: 'at', refreshToken: 'rt', expiresAtMs: Date.now() + 3600_000,
-        domain: 'www.workbuddy.cn', uid: 'uid-miao', source: 'dsh', nickname: '喵娘_认真看置顶',
+        domain: 'www.workbuddy.cn', uid: 'uid-miao', source: 'dsh', nickname: '示例昵称',
       },
     }))
     const ctx = new Context()
@@ -154,7 +154,7 @@ describe('WorkBuddy Host settings integration', () => {
     class SeededSettings extends MemorySettings {
       protected override load(): Promise<Record<string, unknown>> {
         return Promise.resolve({
-          [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accounts: ['miaoniang'] },
+          [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accounts: ['bob'] },
         })
       }
     }
@@ -163,11 +163,11 @@ describe('WorkBuddy Host settings integration', () => {
     await ctx.plugin(WorkBuddy, {})
 
     await vi.waitFor(() => {
-      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy:miaoniang')
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy:bob')
     })
-    const provider = ctx.llm.listProviders().find(entry => entry.id === 'workbuddy:miaoniang')
+    const provider = ctx.llm.listProviders().find(entry => entry.id === 'workbuddy:bob')
     // The picker groups by display name: the snapshot nickname wins, the key
     // remains only the routing identity.
-    expect(provider?.name).toBe('WorkBuddy · 喵娘_认真看置顶')
+    expect(provider?.name).toBe('WorkBuddy · 示例昵称')
   })
 })

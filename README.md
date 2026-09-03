@@ -82,7 +82,7 @@ dsh plugin --profile desktop exec dsh-workbuddy-connect doctor     # 诊断
 插件默认沿用桌面 App 的单一登录。要多个账号共存切换（如一个号额度耗尽换另一个），用快照式导入：
 
 ```sh
-# 1. 在 WorkBuddy 桌面 App 登录账号 A，然后（key 自己起名，如 jmglsi）：
+# 1. 在 WorkBuddy 桌面 App 登录账号 A，然后（key 自己起名）：
 dsh plugin --profile desktop exec dsh-workbuddy-connect import a
 # 2. 桌面 App 切换登录账号 B，然后：
 dsh plugin --profile desktop exec dsh-workbuddy-connect import b
