@@ -88,7 +88,7 @@
     "@deepseek-ai/dsh-home-paths": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-host-webserver": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-llm-pi-ai": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.1.1-rc.2",
     "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.1",
     "@types/node": "^22.20.0",
@@ -97,9 +97,5 @@
     "tsdown": "^0.22.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.8"
-  },
-  "dependencies": {
-    "@deepseek-ai/dsh-llm-pi-ai": "0.1.1-rc.2",
-    "@earendil-works/pi-ai": "0.82.1"
   }
 }
