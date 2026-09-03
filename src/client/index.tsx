@@ -1,9 +1,10 @@
 /** Browser half: WorkBuddy account status inside Plugin configuration. */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { WorkBuddyPluginCard } from './WorkBuddyPluginCard.tsx'
 import type { WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
 import { en, zh } from './locales.ts'
@@ -18,7 +19,18 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /** Stable browser-plugin name. */
 export const name = 'dsh-workbuddy-connect-client'
-/** Client services required by the Plugin configuration contribution. */
+/**
+ * Client services required by the Plugin configuration contribution.
+ *
+ * DSH 0.1.2 removed `@deepseek-ai/dsh-client-runtime` (the package that used to
+ * hold the browser `ClientContext` alias and the `slots` service). The services
+ * this card relies on now come from narrower packages: the `slots` registry
+ * moved to `@deepseek-ai/dsh-client-ui-renderer`, `locale` stayed in
+ * `@deepseek-ai/dsh-client-locale`, and the `settings.plugin.item` slot is
+ * declared by `@deepseek-ai/dsh-client-ui-settings-plugins`. All three are
+ * named in the package's `dsh.client.inject` list, so cordis has activated
+ * them before this plugin's fiber starts.
+ */
 export const inject = ['slots', 'locale']
 
 /**
