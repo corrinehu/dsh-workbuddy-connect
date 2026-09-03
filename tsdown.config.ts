@@ -15,7 +15,7 @@ const CLIENT_EXTERNALS = [
   'react',
   'react/jsx-runtime',
   '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-runtime/client',
+  '@deepseek-ai/dsh-client-ui-renderer/client',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-locale/client',
 ] as const
@@ -34,7 +34,6 @@ export default [
     dts: true,
     clean: true,
     define: VERSION_DEFINE,
-    noExternal: [/^@deepseek-ai\/dsh-llm-pi-ai/, /^@earendil-works\/pi-ai/],
     deps: {
       neverBundle: [
         // dsh-llm-pi-ai and pi-ai are bundled on purpose: the 0.1.2-alpha line

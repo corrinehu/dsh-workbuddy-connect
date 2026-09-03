@@ -7,7 +7,6 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import { WorkBuddyAccountManager, WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
@@ -126,10 +125,8 @@ export function apply(ctx: Context, config: Config): void {
   // not the raw plugin config, decides multi-account mode. The runtime is
   // booted from that callback; the promise merely lets the registration
   // path wait for it deterministically.
-  // DSH 0.1.2-rc.1 moved the section installer onto the settings service
-  // (`settings.installSection`) and dropped the free function; 0.1.2-alpha and
-  // 0.1.1-rc.2 only export the free function. The hooks are shared, so both
-  // paths drive the same settingsReady promise and the same effective config.
+  // The hooks below are shared by the installer and the live config source,
+  // so both drive the same settingsReady promise and effective config.
   const sectionHooks = {
     setSource(source: () => Config) { current = source },
     onChange() {
@@ -144,15 +141,12 @@ export function apply(ctx: Context, config: Config): void {
   // bare property reads outside a declared dependency, on the host as in tests.
   ctx.inject(['settings'], settingsCtx => {
     const service = settingsCtx.settings as unknown as {
-      installSection?: typeof installSettingsSection
+      installSection: (owner: unknown, ns: unknown, schema: unknown, entry: unknown, hooks: unknown) => void
     }
-    if (typeof service.installSection === 'function') {
-      // 0.1.2-rc.1+ path: the installer rides the settings service.
-      service.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, sectionHooks)
-    } else {
-      // 0.1.1-rc.2 / 0.1.2-alpha path: the free function.
-      installSettingsSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, sectionHooks)
-    }
+    // The installer rides the settings service; the 0.1.1-rc.2 free function
+    // it replaced is gone from this line, so a host without the method cannot
+    // be supported from here.
+    service.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, sectionHooks)
   })
 
   const start = (active: Config): void => {
@@ -215,7 +209,7 @@ export function apply(ctx: Context, config: Config): void {
         if (stopped) return
 
         // Prefer each account's snapshot nickname in the provider display
-        // name (the picker then shows e.g. `WorkBuddy · 喵娘_认真看置顶`
+        // name (the picker then shows e.g. `WorkBuddy · 示例昵称`
         // instead of the raw import key); keys stay the routing identity, so
         // a missing nickname simply falls back to the key.
         const nicknameByKey = new Map<string, string>()

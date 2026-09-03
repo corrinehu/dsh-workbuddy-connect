@@ -40,32 +40,45 @@
 
 前置：已安装并登录 WorkBuddy 桌面 App（插件复用 App 的登录状态，账号切换自动跟随）。
 
-> 本 fork 增加了多账号支持与新版 host（`0.1.2`）兼容。**请从 GitHub 安装本仓库**，不要装插件市场里的 `dsh-workbuddy-connect`（那是无多账号的上游旧版）。以下以 **DSH Desktop** 为例。
+**版本对应（重要）**：本插件与 DSH 核心版本一一对应，不可混用——不匹配的组合会导致 DSH 启动失败：
 
-**方式一：一键脚本（macOS/Linux，推荐）**
+| 插件版本 | 要求的 DSH 核心 | 桌面 App |
+|---|---|---|
+| **0.3.0+** | `0.1.2-rc.1` 及以上 | 建议 `2.0.5`+ |
+| **0.2.6** | `0.1.1-rc.2`（旧线） | `2.0.3` / `2.0.4` |
+
+- DSH `0.1.2-rc.1` 及以上的用户，正常安装最新版即可：`dsh plugin --profile web add dsh-workbuddy-connect`
+- 还在用 DSH `0.1.1-rc.2` 的用户，请安装旧版本并停留在 `0.2.6`：`dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
+
+插件在三种 DSH 界面下均可运行：**Web**、**Desktop**、**TUI**。根据你使用的 profile 选对应命令安装。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jmglsi/dsh-workbuddy-connect/main/scripts/install-desktop.sh | sh
+# Web（推荐，自带预构建产物）
+dsh plugin --profile web add dsh-workbuddy-connect
+dsh web
+
+# 或从 GitHub 源码安装 Web 版
+dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
+dsh web
 ```
-
-脚本做三件事：把 `github:jmglsi/dsh-workbuddy-connect` 装进 `~/.dsh/profiles/desktop`、在 `package.json` 的 `dsh.profile.bundles` 里注册 bundle、提示重启 DSH Desktop。
-
-**方式二：手动**
 
 ```sh
-# 1) 安装包（dsh 不在 PATH 时用 node ~/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js 代替 dsh）
-dsh plugin --profile desktop add github:jmglsi/dsh-workbuddy-connect
-
-# 2) 注册 bundle：编辑 ~/.dsh/profiles/desktop/package.json，
-#    在 "dsh" → "profile" → "bundles" 数组末尾追加 "dsh-workbuddy-connect"
-#    （如："bundles": ["@deepseek-ai/dsh-base", "...", "dsh-workbuddy-connect"]）
-
-# 3) 重启 DSH Desktop
+# Desktop（DSH Desktop 桌面版）
+dsh plugin --profile desktop add dsh-workbuddy-connect
+dsh --profile desktop
 ```
 
-装好后，在模型选择器里即可看到 `WorkBuddy` 分组；设置 → 插件 → **DSH WorkBuddy Connect** 卡片可查看账号昵称、令牌有效期、剩余积分，每个账号行有删除按钮（两段确认）。
+```sh
+# TUI（终端界面）
+dsh plugin --profile dsh-tui add dsh-workbuddy-connect
+dsh --profile dsh-tui
+```
 
-插件在 Web / TUI profile 下同样可用（`--profile web` / `--profile dsh-tui`，TUI 需 pnpm 11：`npx pnpm@11`）。
+> **TUI 用户请先留在 0.2.6**：实测在 TUI 上安装本插件 0.3.0 会导致启动崩溃（报 `events is not iterable`），原因是终端界面插件 `@deepseek-harness-tui/dsh-tui` 还没适配 DSH 新核心（修复已提交，尚未发版）。建议 TUI 用户暂时继续使用 DSH `0.1.1-rc.2` 和本插件 `0.2.6`，等终端界面插件发布适配版本后再升级 0.3.0。
+
+> 提示：`dsh-tui` profile 需用 pnpm 11 安装（PATH 里是其他版本会报 `ERR_PNPM_UNEXPECTED_STORE`，用 `npx pnpm@11` 即可）。
+
+安装后，在对应界面的模型选择器里切换到 WorkBuddy 模型即可使用；Web 下设置卡片（设置 → 插件 → DSH WorkBuddy Connect）可查看账号信息、令牌有效期与剩余积分，TUI 下可在 `/settings` 里配置 `authFile`。
 
 ## 命令行
 
@@ -102,7 +115,9 @@ workbuddy:
   defaultAccount: a
 ```
 
-账号快照以 key 的 **MD5 前 8 位**命名落在 `~/.dsh/.workbuddy-auth/`（key 本身记在文件里），所以中文、带 `/`、带空格的 key 都安全；旧版本按 key 命名的快照会在首次使用时自动迁移。，长期使用靠 refresh token 自动续期；若某账号 refresh token 失效，重新在桌面登录该账号后再 `import <key> --force` 覆盖即可。
+账号快照以 key 的 **MD5 前 8 位**命名落在 `~/.dsh/.workbuddy-auth/`（key 本身记在文件里），所以中文、带 `/`、带空格的 key 都安全；旧版本按 key 命名的快照会在首次使用时自动迁移。命令行与设置面板都按 `<md5:8> · 昵称` 显示账号，便于把某一行对上磁盘上的快照文件。
+
+导入后长期使用靠 refresh token 自动续期；若某账号 refresh token 失效，重新在桌面登录该账号后再 `import <key> --force` 覆盖即可。
 
 ## 已知限制
 
