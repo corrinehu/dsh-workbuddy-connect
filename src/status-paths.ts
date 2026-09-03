@@ -3,6 +3,9 @@
 /** Plugin-owned status endpoint consumed by its browser half. */
 export const WORKBUDDY_STATUS_PATH = '/plugins/dsh-workbuddy-connect/status'
 
+/** Plugin-owned removal endpoint: body `{ key }`, removes one imported account. */
+export const WORKBUDDY_REMOVE_PATH = '/plugins/dsh-workbuddy-connect/remove'
+
 /** One billing package and its remaining credit. */
 export interface WorkBuddyWebCreditAccount {
   packageName: string

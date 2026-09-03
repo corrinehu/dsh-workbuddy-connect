@@ -14,6 +14,7 @@
 - **provider 分组**：`Config.accounts`（string[]）非空时，每个 key 注册独立 provider `workbuddy:<key>`（displayName `WorkBuddy · <key>`），baseUrl 编码账号 `/v1/<key>`；`accounts` 为空保持单账户 legacy（provider `workbuddy`）完全不变。
 - **shim 路由**：`/v1/<key>/chat/completions`（multi）/ `/v1/chat/completions`（legacy），shim 按 `instanceof` 区分 `WorkBuddyCredentialStore | WorkBuddyAccountManager`；`/v1/<key>/models` 同目录。
 - **CLI**：`accounts`（列表，--json 可用）、`import <key> [label] [--force]`（快照当前桌面登录，默认拒绝覆盖已有 key）、`remove <key>`。
+- **卡片账号管理（2026-09-04）**：`POST /plugins/dsh-workbuddy-connect/remove`（body `{key}`，仅 loopback origin）删除快照并同步从 settings 作用域的 `accounts` 移除该 key；卡片每行右侧为删除按钮，两段式确认（点击后 4s 内再点才执行），行间与"已连接 N 个账号"下方有分割线。legacy 单账户模式无此端点（404）。
 - **顺手修的三个原版 bug**（均被新测试暴露）：
   1. `parseOwnDocument` 复用 `parseWorkBuddyAuth` 读 `auth['expiresAt']`，而 own 格式写的是 `expiresAtMs` → own 回读过期时间恒 0 → 单账户模式下 `needsRefresh` 恒真、**每个请求都打一次 refresh 端点**，且刷新副本永远竞争不过未过期桌面文件。改为专用驼峰解析。
   2. 同路径下 uid/nickname/enterpriseId 在 own 往返后丢失 → 账户快照模式无桌面兜底，请求会退化成 `X-No-User-Id: 1`。专用解析同时修复。

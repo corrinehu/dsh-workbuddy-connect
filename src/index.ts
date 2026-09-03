@@ -15,6 +15,7 @@ import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
+import type { WorkBuddyStatusRouteOptions } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
@@ -160,7 +161,29 @@ export function apply(ctx: Context, config: Config): void {
 
     // Same-origin status route backing the Plugin-configuration card; the
     // webServer service is optional (a headless profile serves no browser).
-    ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, { store: activeStore, client, models: () => catalog.current() }))
+    // Multi-account mode also exposes removal: deleting a snapshot and, in the
+    // same breath, dropping the key from the persisted accounts list so the
+    // next start does not resurrect a provider for a deleted credential.
+    const routeOptions: WorkBuddyStatusRouteOptions = {
+      store: activeStore,
+      client,
+      models: () => catalog.current(),
+    }
+    if (multiAccount) {
+      routeOptions.remove = async (key: string) => {
+        if (!(activeStore instanceof WorkBuddyAccountManager)) return
+        await activeStore.remove(key)
+        const remaining = (current().accounts ?? []).filter(entry => entry !== key)
+        try {
+          await ctx.settings?.update(WORKBUDDY_SETTINGS_NS, { accounts: remaining })
+        } catch (error: unknown) {
+          // The snapshot is already gone; a stale accounts entry only means
+          // the next start logs a missing-credential warning for that key.
+          ctx.logger.warn('dsh-workbuddy-connect: could not sync the accounts list after removal', error)
+        }
+      }
+    }
+    ctx.inject(['webServer'], webCtx => registerWorkBuddyStatusRoute(webCtx, routeOptions))
 
     void shim.ready
       .then(() => {

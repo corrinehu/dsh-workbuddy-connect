@@ -27,6 +27,10 @@ export const en = {
   rate: '{rate} credits per message',
   multiAccountCount: '{count} accounts connected',
   multiAccountEmpty: 'No accounts imported yet; run `dsh-workbuddy-connect import <key>` after signing in on the desktop app.',
+  removeAccount: 'Remove',
+  confirmRemoveAccount: 'Confirm remove?',
+  removingAccount: 'Removing…',
+  removeAccountFailed: 'Removal failed: {message}',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -58,4 +62,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   rate: '{rate} 积分/次',
   multiAccountCount: '已连接 {count} 个账号',
   multiAccountEmpty: '尚未导入任何账号；在桌面 App 登录后运行 `dsh-workbuddy-connect import <key>`。',
+  removeAccount: '删除',
+  confirmRemoveAccount: '确认删除？',
+  removingAccount: '删除中…',
+  removeAccountFailed: '删除失败：{message}',
 }

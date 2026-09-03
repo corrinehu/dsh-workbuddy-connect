@@ -1,10 +1,10 @@
 /** WorkBuddy status card contributed to Harness Plugin configuration. */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
-import { WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
+import { WORKBUDDY_REMOVE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
 import type { WorkBuddyWebAccount, WorkBuddyWebModelBadge, WorkBuddyWebStatus } from '../status-paths.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -63,6 +63,26 @@ const modelBadgeChipStyle: CSSProperties = {
   padding: '1px 8px', borderRadius: 999, fontSize: 11, lineHeight: '18px',
   background: 'var(--dsw-alias-state-success-subtle, rgba(34, 160, 107, 0.12))',
   color: 'var(--dsw-alias-state-success-primary, #22a06b)',
+}
+const dividerStyle: CSSProperties = {
+  border: 0,
+  borderTop: '1px solid var(--dsw-alias-border-l2)',
+  width: '100%',
+  margin: '14px 0',
+}
+const removeButtonStyle: CSSProperties = {
+  ...buttonStyle,
+  minHeight: 28,
+  padding: '4px 12px',
+  fontSize: 13,
+  borderRadius: 14,
+  color: 'var(--dsw-alias-state-error-primary, #d92d20)',
+}
+const removeConfirmStyle: CSSProperties = {
+  ...removeButtonStyle,
+  background: 'var(--dsw-alias-state-error-primary, #d92d20)',
+  borderColor: 'var(--dsw-alias-state-error-primary, #d92d20)',
+  color: '#fff',
 }
 
 /** Localize an upstream promotional badge label, with an unknown-badge fallback. */
@@ -157,12 +177,63 @@ function ModelOfferRow({ model, t }: {
   )
 }
 
-/** One managed account rendered as a labeled subsection. */
-function AccountRow({ account, t }: {
+/**
+ * One managed account rendered as a labeled subsection. The right-hand side
+ * carries the removal control (in place of the bare nickname, which already
+ * titles the row): the first click arms the button, the second click within
+ * the confirm window actually removes the snapshot — an accidental single
+ * click never deletes a credential.
+ */
+function AccountRow({ account, t, onRemove }: {
   account: WorkBuddyWebAccount
   t: WorkBuddyPluginCardInjected['t']
+  onRemove?: (key: string) => Promise<void>
 }): React.ReactNode {
   const title = account.label ?? account.nickname ?? account.key
+  const [phase, setPhase] = useState<'idle' | 'confirm' | 'busy'>('idle')
+  const [failed, setFailed] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    if (phase !== 'confirm') return
+    const timer = window.setTimeout(() => { setPhase('idle') }, 4000)
+    return () => { window.clearTimeout(timer) }
+  }, [phase])
+
+  const doRemove = async (): Promise<void> => {
+    if (onRemove === undefined) return
+    setPhase('busy')
+    try {
+      await onRemove(account.key)
+      // The row disappears with the refreshed status document; no local
+      // state to reset when removal succeeded.
+    } catch (error: unknown) {
+      setFailed(error instanceof Error ? error.message : t('removeAccountFailed', { message: '' }))
+      setPhase('idle')
+    }
+  }
+
+  const control = onRemove === undefined
+    ? <span style={bodyStyle}>{account.state === 'signed-in' ? (account.nickname ?? account.key) : t('signedOut')}</span>
+    : (
+      <button
+        type="button"
+        style={phase === 'confirm' ? removeConfirmStyle : removeButtonStyle}
+        disabled={phase === 'busy'}
+        title={account.nickname ?? account.key}
+        aria-label={`${t('removeAccount')}: ${title}`}
+        onClick={() => {
+          if (phase === 'idle') {
+            setFailed(undefined)
+            setPhase('confirm')
+            return
+          }
+          if (phase === 'confirm') void doRemove()
+        }}
+      >
+        {phase === 'idle' ? t('removeAccount') : phase === 'confirm' ? t('confirmRemoveAccount') : t('removingAccount')}
+      </button>
+    )
+
   return (
     <div style={quotaGroupStyle}>
       <div style={rowStyle}>
@@ -170,8 +241,9 @@ function AccountRow({ account, t }: {
           <span aria-hidden="true" style={dotStyle(account.state)} />
           <span>{title}</span>
         </div>
-        <span style={bodyStyle}>{account.state === 'signed-in' ? (account.nickname ?? account.key) : t('signedOut')}</span>
+        {control}
       </div>
+      {failed === undefined ? null : <p style={errorStyle}>{t('removeAccountFailed', { message: failed })}</p>}
       {account.expiresAt === undefined ? null
         : <p style={bodyStyle}>{t('accessTokenExpires', { time: formatTime(account.expiresAt) })}</p>}
       {account.credits === undefined ? null : (
@@ -249,6 +321,28 @@ export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
     }
   }
 
+  /**
+   * Remove one imported account through the plugin's same-origin route, then
+   * re-read the status document so the row (and the connected count) drop out
+   * immediately. The host also syncs the persisted accounts list.
+   */
+  const removeAccount = useCallback(async (key: string): Promise<void> => {
+    const response = await fetch(WORKBUDDY_REMOVE_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ key }),
+    })
+    if (!response.ok) {
+      const value: unknown = await response.json().catch(() => undefined)
+      const message = typeof (value as { error?: unknown } | undefined)?.error === 'string'
+        ? (value as { error: string }).error
+        : `HTTP ${String(response.status)}`
+      throw new Error(message)
+    }
+    await refresh()
+  }, [refresh])
+
   const title = t('title')
   const accounts = status.status === 'signed-in' ? status.accounts : undefined
   const label = status.status === 'signed-in'
@@ -287,11 +381,19 @@ export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
               </button>
             </div>
             {status.status === 'signed-in' && accounts !== undefined
-              ? accounts.length === 0
-                ? <p style={bodyStyle}>{t('multiAccountEmpty')}</p>
-                : <div style={quotaListStyle}>
-                    {accounts.map(account => <AccountRow key={account.key} account={account} t={t} />)}
-                  </div>
+              ? <>
+                  {accounts.length > 0 ? <hr style={dividerStyle} /> : null}
+                  {accounts.length === 0
+                    ? <p style={bodyStyle}>{t('multiAccountEmpty')}</p>
+                    : <div style={{ ...quotaListStyle, gap: 14 }}>
+                        {accounts.map((account, index) => (
+                          <Fragment key={account.key}>
+                            {index > 0 ? <hr style={{ ...dividerStyle, margin: 0 }} /> : null}
+                            <AccountRow account={account} t={t} onRemove={removeAccount} />
+                          </Fragment>
+                        ))}
+                      </div>}
+                </>
               : null}
             {status.status === 'signed-in' && accounts === undefined
               ? <>
