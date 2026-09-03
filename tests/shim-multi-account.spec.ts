@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { WorkBuddyAccountManager, type WorkBuddyCredential } from '../src/auth.ts'
+import { ownAccountPath, WorkBuddyAccountManager, type WorkBuddyCredential } from '../src/auth.ts'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
 import { createWorkBuddyShim, type WorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyChatResult } from '../src/upstream.ts'
@@ -36,6 +36,7 @@ async function startMultiShim(): Promise<MultiHarness> {
   await mkdir(authDir, { recursive: true })
   const seed = (key: string, token: string, uid: string): string => JSON.stringify({
     version: 1,
+    key,
     credential: {
       accessToken: token,
       refreshToken: 'rt',
@@ -44,8 +45,8 @@ async function startMultiShim(): Promise<MultiHarness> {
       uid,
     },
   })
-  await writeFile(join(authDir, 'alice.json'), seed('alice', 'at-alice', 'uid-alice'))
-  await writeFile(join(authDir, 'bob.json'), seed('bob', 'at-bob', 'uid-bob'))
+  await writeFile(ownAccountPath('alice'), seed('alice', 'at-alice', 'uid-alice'))
+  await writeFile(ownAccountPath('bob'), seed('bob', 'at-bob', 'uid-bob'))
 
   const harness: MultiHarness = { shim: undefined as unknown as WorkBuddyShim, seenCredentials: [] }
   const manager = new WorkBuddyAccountManager({

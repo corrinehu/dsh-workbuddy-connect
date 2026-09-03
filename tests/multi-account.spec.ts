@@ -1,9 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   ownAccountPath,
+  snapshotName,
+  workbuddyAccountDir,
   WorkBuddyAccountManager,
   WorkBuddyCredentialStore,
   type WorkBuddyCredential,
@@ -141,6 +143,51 @@ describe('WorkBuddyAccountManager', () => {
       await manager.remove('carol')
       expect(await manager.listAccounts()).toEqual([])
       expect(await readFile(desktop, 'utf8')).toContain('uid-carol')
+    })
+  })
+
+  it('stores accounts under an md5 file name and keeps the key inside', async () => {
+    await withTempHome(async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'wb-name-'))
+      CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+      const manager = new WorkBuddyAccountManager({
+        desktopPath: join(dir, 'missing.info'),
+        refresh: async credential => credential,
+      })
+      // Keys that are not safe file names (Chinese, slashes, dots) must all
+      // land as eight hex digits — no escapes, no subdirectories.
+      for (const key of ['中文账号', 'a/b', '..', '狗狗朋友圈看置顶', 'with space']) {
+        manager.storeFor(key).seedOwn(credentialWith(Date.now() + 3600_000, `uid-${key}`))
+      }
+      await Promise.all(['中文账号', 'a/b', '..', '狗狗朋友圈看置顶', 'with space']
+        .map(key => manager.storeFor(key).seedOwn(credentialWith(Date.now() + 3600_000, `uid-${key}`))))
+      const names = (await readdir(workbuddyAccountDir())).filter(name => name.endsWith('.json'))
+      expect(names.every(name => /^[0-9a-f]{8}\.json$/u.test(name))).toBe(true)
+      expect(new Set(names).size).toBe(5)
+      // Discovery reads the key back out of each document.
+      expect((await manager.listAccounts()).sort()).toEqual(['..', 'a/b', 'with space', '中文账号', '狗狗朋友圈看置顶'])
+    })
+  })
+
+  it('still discovers snapshots written before the md5 naming', async () => {
+    await withTempHome(async () => {
+      const dir = workbuddyAccountDir()
+      await mkdir(dir, { recursive: true })
+      // Legacy shape: no `key` field, file named after the (encoded) key.
+      await writeFile(join(dir, `${encodeURIComponent('中文账号')}.json`), JSON.stringify({
+        version: 1,
+        credential: credentialWith(Date.now() + 3600_000, 'uid-legacy'),
+      }))
+      const manager = new WorkBuddyAccountManager({ refresh: async c => c })
+      expect(await manager.listAccounts()).toEqual(['中文账号'])
+      const credential = await manager.resolve('中文账号')
+      expect(credential.uid).toBe('uid-legacy')
+      // Migration: the legacy file is gone, replaced by the md5-named copy
+      // that carries the key inside.
+      const names = (await readdir(workbuddyAccountDir())).filter(name => name.endsWith('.json'))
+      expect(names).toEqual([snapshotName('中文账号')])
+      const migrated = JSON.parse(await readFile(ownAccountPath('中文账号'), 'utf8')) as { key: string }
+      expect(migrated.key).toBe('中文账号')
     })
   })
 

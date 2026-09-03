@@ -102,7 +102,7 @@ workbuddy:
   defaultAccount: a
 ```
 
-每个账号是导入时刻的快照（桌面文件只读、绝不回写），长期使用靠 refresh token 自动续期；若某账号 refresh token 失效，重新在桌面登录该账号后再 `import <key> --force` 覆盖即可。
+账号快照以 key 的 **MD5 前 8 位**命名落在 `~/.dsh/.workbuddy-auth/`（key 本身记在文件里），所以中文、带 `/`、带空格的 key 都安全；旧版本按 key 命名的快照会在首次使用时自动迁移。，长期使用靠 refresh token 自动续期；若某账号 refresh token 失效，重新在桌面登录该账号后再 `import <key> --force` 覆盖即可。
 
 ## 已知限制
 

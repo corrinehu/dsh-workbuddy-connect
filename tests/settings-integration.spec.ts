@@ -6,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SettingsProvider from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import { ownAccountPath } from '../src/auth.ts'
 import * as WorkBuddy from '../src/index.ts'
 
 class MemorySettings extends SettingsProvider {
@@ -136,14 +137,54 @@ describe('WorkBuddy Host settings integration', () => {
     expect(resolved.provider).toBe('workbuddy:alice')
   })
 
+  it('accepts a non-ASCII account key as a registered provider id', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-cjk-key-'))
+    vi.stubEnv('DSH_HOME', root)
+    const authDir = join(root, '.workbuddy-auth')
+    await mkdir(authDir, { recursive: true })
+    // The key is whatever the user typed at import time; Chinese keys must
+    // round-trip through the provider id, the model list, and the per-account
+    // shim path (which percent-encodes the key into the baseUrl).
+    await writeFile(ownAccountPath('中文账号'), JSON.stringify({
+      version: 1,
+      key: '中文账号',
+      credential: {
+        accessToken: 'at', refreshToken: 'rt', expiresAtMs: Date.now() + 3600_000,
+        domain: 'www.workbuddy.cn', uid: 'uid-cjk', source: 'dsh', nickname: '示例昵称',
+      },
+    }))
+    const ctx = new Context()
+    context = ctx
+    class SeededSettings extends MemorySettings {
+      protected override load(): Promise<Record<string, unknown>> {
+        return Promise.resolve({ [WorkBuddy.WORKBUDDY_SETTINGS_NS]: { accounts: ['中文账号'] } })
+      }
+    }
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SeededSettings)
+    await ctx.plugin(WorkBuddy, {})
+
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy:中文账号')
+    })
+    // Models resolve for a CJK provider id, and the resolved metadata echoes it
+    // back verbatim — that id is what selections and billing rows persist.
+    expect(await ctx.llm.listModels('workbuddy:中文账号')).toHaveLength(15)
+    const resolved = await ctx.llm.resolveModelInfo('workbuddy:中文账号', 'auto')
+    expect(resolved.provider).toBe('workbuddy:中文账号')
+    const provider = ctx.llm.listProviders().find(entry => entry.id === 'workbuddy:中文账号')
+    expect(provider?.name).toBe('WorkBuddy · 示例昵称')
+  })
+
   it('shows the snapshot nickname in the provider display name', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-nick-'))
     vi.stubEnv('DSH_HOME', root)
     // One imported snapshot whose credential carries a (non-ASCII) nickname.
     const authDir = join(root, '.workbuddy-auth')
     await mkdir(authDir, { recursive: true })
-    await writeFile(join(authDir, 'bob.json'), JSON.stringify({
+    await writeFile(ownAccountPath('bob'), JSON.stringify({
       version: 1,
+      key: 'bob',
       credential: {
         accessToken: 'at', refreshToken: 'rt', expiresAtMs: Date.now() + 3600_000,
         domain: 'www.workbuddy.cn', uid: 'uid-miao', source: 'dsh', nickname: '示例昵称',

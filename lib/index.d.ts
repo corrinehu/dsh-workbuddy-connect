@@ -49199,6 +49199,11 @@ interface WorkBuddyStoreOptions {
   desktopPath?: string;
   /** Explicit plugin-owned copy path, defaulting under `$DSH_HOME`. */
   ownPath?: string;
+  /**
+   * The account key this copy belongs to, recorded in the snapshot document.
+   * Only set for per-account copies; the single-account copy is unnamed.
+   */
+  ownKey?: string;
   /** Performs the upstream token refresh. */
   refresh: (credential: WorkBuddyCredential) => Promise<WorkBuddyRefreshOutcome>;
   /** Refresh this long before actual expiry; default five minutes. */
@@ -49241,6 +49246,7 @@ declare class WorkBuddyCredentialStore {
   private readonly refresh;
   private readonly refreshMarginMs;
   private readonly ownPath;
+  private readonly ownKey;
   private desktopPathOverride;
   private inflight;
   constructor(options: WorkBuddyStoreOptions);
@@ -49347,7 +49353,15 @@ declare class WorkBuddyAccountManager {
   storeFor(key: string): WorkBuddyCredentialStore;
   /** The desktop credential store, for reading/importing the live sign-in. */
   desktopStore(): WorkBuddyCredentialStore;
-  /** List discovered account keys (filename stems) from the account directory. */
+  /**
+   * List discovered account keys.
+   *
+   * The key lives in the snapshot document; snapshots written before the MD5
+   * naming carried no key and are addressed by their (percent-encoded) file
+   * name instead. Those are migrated in place on first sight — renamed to the
+   * content-addressed name with the key recorded inside — so an upgraded
+   * install keeps resolving accounts it imported under the old naming.
+   */
   listAccounts(): Promise<string[]>;
   private accountInfo;
   /**

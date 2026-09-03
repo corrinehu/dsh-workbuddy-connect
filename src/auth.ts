@@ -8,6 +8,7 @@
  * @module dsh-workbuddy-connect/auth
  */
 
+import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { homedir, release } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -45,6 +46,11 @@ export interface WorkBuddyStoreOptions {
   desktopPath?: string
   /** Explicit plugin-owned copy path, defaulting under `$DSH_HOME`. */
   ownPath?: string
+  /**
+   * The account key this copy belongs to, recorded in the snapshot document.
+   * Only set for per-account copies; the single-account copy is unnamed.
+   */
+  ownKey?: string
   /** Performs the upstream token refresh. */
   refresh: (credential: WorkBuddyCredential) => Promise<WorkBuddyRefreshOutcome>
   /** Refresh this long before actual expiry; default five minutes. */
@@ -65,6 +71,8 @@ const OWN_FORMAT_VERSION = 1
 
 interface OwnDocument {
   version: typeof OWN_FORMAT_VERSION
+  /** The account key this snapshot was imported as. */
+  key: string
   credential: WorkBuddyCredential
 }
 
@@ -78,9 +86,44 @@ export function workbuddyAccountDir(): string {
   return join(resolveDshHome(), WORKBUDDY_AUTH_DIRNAME)
 }
 
+/**
+ * Snapshot file name for one account key.
+ *
+ * Accounts are stored under the first eight hex digits of the key's MD5 rather
+ * than under the key itself: the key is arbitrary user input (a Chinese
+ * nickname, an email, a string with slashes or dots), and letting it name a
+ * file invites path escapes, reserved-name collisions on Windows, and encoding
+ * round-trip bugs. The key is recorded inside the document instead, so the
+ * directory is a content-addressed bag rather than a keyed index.
+ */
+export function snapshotName(key: string): string {
+  return `${createHash('md5').update(key).digest('hex').slice(0, 8)}.json`
+}
+
 /** Plugin-owned copy path for one named account inside the account directory. */
 export function ownAccountPath(key: string): string {
-  return join(workbuddyAccountDir(), `${encodeURIComponent(key)}.json`)
+  return join(workbuddyAccountDir(), snapshotName(key))
+}
+
+/**
+ * The account key recorded in a snapshot document, or undefined when the
+ * document predates keyed snapshots. Snapshots written before the MD5 naming
+ * named the file after the key, so their key is recovered from the file name.
+ */
+export function snapshotKey(document: unknown, fileName: string): string | undefined {
+  if (typeof document === 'object' && document !== null) {
+    const key = (document as Record<string, unknown>)['key']
+    if (typeof key === 'string' && key !== '') return key
+  }
+  const stem = fileName.endsWith('.json') ? fileName.slice(0, -'.json'.length) : fileName
+  if (stem === '' || stem.startsWith('.')) return undefined
+  try {
+    return decodeURIComponent(stem)
+  } catch {
+    // A legacy stem that is not valid percent-encoding cannot be addressed by
+    // key; leaving it out of the listing is safer than guessing.
+    return undefined
+  }
 }
 
 const DESKTOP_AUTH_RELATIVE_PATH = ['CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info'] as const
@@ -202,8 +245,8 @@ export function parseWorkBuddyAuth(text: string): WorkBuddyCredential | undefine
 }
 
 /** Serialize the plugin-owned copy. */
-function ownDocument(credential: WorkBuddyCredential): OwnDocument {
-  return { version: OWN_FORMAT_VERSION, credential }
+function ownDocument(credential: WorkBuddyCredential, key: string): OwnDocument {
+  return { version: OWN_FORMAT_VERSION, key, credential }
 }
 
 /** Parse the plugin-owned copy; other versions and shapes are rejected. */
@@ -259,6 +302,7 @@ export class WorkBuddyCredentialStore {
   private readonly refresh: WorkBuddyStoreOptions['refresh']
   private readonly refreshMarginMs: number
   private readonly ownPath: string
+  private readonly ownKey: string | undefined
   private desktopPathOverride: string | undefined
   private inflight: Promise<WorkBuddyCredential> | undefined
 
@@ -266,6 +310,7 @@ export class WorkBuddyCredentialStore {
     this.refresh = options.refresh
     this.refreshMarginMs = options.refreshMarginMs ?? 5 * 60 * 1000
     this.ownPath = options.ownPath ?? workbuddyOwnAuthPath()
+    this.ownKey = options.ownKey
     this.desktopPathOverride = options.desktopPath
   }
 
@@ -404,7 +449,7 @@ export class WorkBuddyCredentialStore {
   private async saveOwn(credential: WorkBuddyCredential): Promise<void> {
     await mkdir(dirname(this.ownPath), { recursive: true })
     await withFileLock(this.ownPath, async () => {
-      await writeFileAtomic(this.ownPath, `${JSON.stringify(ownDocument(credential), null, 2)}\n`, {
+      await writeFileAtomic(this.ownPath, `${JSON.stringify(ownDocument(credential, this.ownKey ?? ''), null, 2)}\n`, {
         mode: 0o600,
         dirMode: 0o700,
       })
@@ -524,6 +569,7 @@ export class WorkBuddyAccountManager {
         // refreshes) is consulted.
         desktopPath: join(workbuddyAccountDir(), '.no-desktop'),
         ownPath: ownAccountPath(key),
+        ownKey: key,
         refresh: this.refresh,
         refreshMarginMs: this.refreshMarginMs,
       })
@@ -542,7 +588,15 @@ export class WorkBuddyAccountManager {
     })
   }
 
-  /** List discovered account keys (filename stems) from the account directory. */
+  /**
+   * List discovered account keys.
+   *
+   * The key lives in the snapshot document; snapshots written before the MD5
+   * naming carried no key and are addressed by their (percent-encoded) file
+   * name instead. Those are migrated in place on first sight — renamed to the
+   * content-addressed name with the key recorded inside — so an upgraded
+   * install keeps resolving accounts it imported under the old naming.
+   */
   async listAccounts(): Promise<string[]> {
     const dir = workbuddyAccountDir()
     let entries: string[] = []
@@ -555,7 +609,27 @@ export class WorkBuddyAccountManager {
     const keys: string[] = []
     for (const name of entries) {
       if (!name.endsWith('.json')) continue
-      const key = decodeURIComponent(name.slice(0, -'.json'.length))
+      let document: unknown
+      try {
+        document = JSON.parse(await readFile(join(dir, name), 'utf8'))
+      } catch {
+        // Unreadable or non-JSON: fall back to the file name, as before.
+      }
+      const key = snapshotKey(document, name)
+      if (key === undefined) continue
+      if (snapshotName(key) !== name) {
+        // Legacy placement: move the document under its content-addressed
+        // name and record the key. Best effort — a read-only home simply
+        // keeps serving the old name, which snapshotKey still resolves.
+        const credential = parseOwnDocument(JSON.stringify(document))
+        if (credential === undefined) continue
+        try {
+          await writeFileAtomic(ownAccountPath(key), `${JSON.stringify(ownDocument(credential, key), null, 2)}\n`, { mode: 0o600 })
+          await rm(join(dir, name), { force: true })
+        } catch {
+          // Leave the legacy file in place; discovery already found it.
+        }
+      }
       keys.push(key)
     }
     return keys
