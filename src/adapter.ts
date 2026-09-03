@@ -74,11 +74,12 @@ const RATE_SEPARATOR = ' · '
 /**
  * Append the billing rate to one model's display name.
  *
- * The rate rides the *name* alone because the DSH model surfaces disagree
- * about which field they render: the composer's model seat (`ModelSelect`)
- * renders `model.name` only and never reads `description`, while the `/model`
- * popup renders BOTH — a rate in `description` would show it twice there, so
- * `description` stays untouched.
+ * The rate AND the declared promo badges ride the *name* alone: since DSH
+ * 0.1.2 the composer's model seat (`ModelSelect`) renders `model.name` only —
+ * `description` is no longer read there at all (the 0.1.1-era client rendered
+ * it, which is why the badges used to be visible in the seat). The `/model`
+ * popup renders the name too, so a separate `description` copy would either
+ * duplicate (rate) or vanish (badges) depending on client generation.
  *
  * This is display-only and cannot affect routing: the wire request is built
  * from `model.id` (pi-ai's completions API sets `model: model.id`), the
@@ -88,15 +89,24 @@ const RATE_SEPARATOR = ' · '
  */
 
 /**
- * The declared promo badges (`限时免费`, `夜间折扣`) as a display string for the
- * `/model` popup's description slot, which the name does not cover. The
- * labels are the upstream's own spellings and the host seam has no locale
- * service, so non-Chinese UIs see them verbatim — accepted until the picker
- * grows a localized badge slot.
+ * The catalog display suffix: the billing rate followed by the declared promo
+ * badges (`限时免费`, `夜间折扣`), or undefined when the row carries neither.
+ * The badge labels are the upstream's own spellings and the host seam has no
+ * locale service, so non-Chinese UIs see them verbatim — accepted until the
+ * picker grows a localized badge slot.
  */
-function promoDescription(info: WorkBuddyModelInfo): string | undefined {
-  const badges = info.billing?.badges
-  return badges === undefined || badges.length === 0 ? undefined : badges.join(' · ')
+function displaySuffix(info: WorkBuddyModelInfo): string | undefined {
+  const parts = [
+    normalizeCredits(info.billing?.credits),
+    ...(info.billing?.badges ?? []),
+  ].filter((part): part is string => part !== undefined && part !== '')
+  return parts.length === 0 ? undefined : parts.join(' · ')
+}
+
+/** Append the catalog display suffix to one model's display name. */
+function withCatalogDisplay(name: string, info: WorkBuddyModelInfo): string {
+  const suffix = displaySuffix(info)
+  return suffix === undefined ? name : `${name}${RATE_SEPARATOR}${suffix}`
 }
 function withRate(name: string, info: WorkBuddyModelInfo): string {
   const rate = normalizeCredits(info.billing?.credits)
@@ -283,8 +293,7 @@ class WorkBuddyPiAiAdapter extends PiAiAdapter {
     return models.map(model => {
       const info = this.infoFor(model.id)
       if (info === undefined) return model
-      const promo = promoDescription(info)
-      return { ...model, name: withRate(model.name, info), ...promo === undefined ? {} : { description: promo } }
+      return { ...model, name: withCatalogDisplay(model.name, info) }
     })
   }
 
@@ -292,7 +301,6 @@ class WorkBuddyPiAiAdapter extends PiAiAdapter {
     const resolved = await super.resolveModel(provider, model, signal)
     const info = this.infoFor(model)
     if (info === undefined) return resolved
-    const promo = promoDescription(info)
-    return { ...resolved, name: withRate(resolved.name, info), ...promo === undefined ? {} : { description: promo } }
+    return { ...resolved, name: withCatalogDisplay(resolved.name, info) }
   }
 }
