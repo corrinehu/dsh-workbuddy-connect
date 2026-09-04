@@ -205,9 +205,29 @@ function parseOwnDocument(text: string): WorkBuddyCredential | undefined {
   const document = parsed as Record<string, unknown>
   if (document['version'] !== OWN_FORMAT_VERSION) return undefined
   if (typeof document['credential'] !== 'object' || document['credential'] === null) return undefined
-  const credential = parseWorkBuddyAuth(JSON.stringify({ auth: document['credential'] }))
-  if (credential === undefined) return undefined
-  return { ...credential, source: 'dsh' }
+  // The owned copy stores the normalized credential itself (camelCase
+  // `expiresAtMs`, identity fields at the top level), not the desktop
+  // document shape. Round-tripping through parseWorkBuddyAuth reads
+  // `expiresAt` and an `account` object, finds neither, zeroes the expiry,
+  // and drops uid/enterprise/nickname — so a surviving copy refreshed on
+  // every request and lost its identity headers.
+  const stored = document['credential'] as Record<string, unknown>
+  const accessToken = typeof stored['accessToken'] === 'string' ? stored['accessToken'] : ''
+  if (accessToken === '') return undefined
+  const refreshExpiresAtMs = typeof stored['refreshExpiresAtMs'] === 'number' ? stored['refreshExpiresAtMs'] : undefined
+  const enterpriseId = optionalString(stored['enterpriseId'])
+  const nickname = optionalString(stored['nickname'])
+  return {
+    accessToken,
+    refreshToken: typeof stored['refreshToken'] === 'string' ? stored['refreshToken'] : '',
+    expiresAtMs: typeof stored['expiresAtMs'] === 'number' ? stored['expiresAtMs'] : 0,
+    ...refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs },
+    domain: optionalString(stored['domain']) ?? '',
+    uid: optionalString(stored['uid']) ?? '',
+    ...enterpriseId === undefined ? {} : { enterpriseId },
+    ...nickname === undefined ? {} : { nickname },
+    source: 'dsh',
+  }
 }
 
 /** Whether a filesystem error reports an absent path. */

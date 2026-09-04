@@ -138,6 +138,42 @@ describe('WorkBuddyCredentialStore', () => {
     await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at' })
   })
 
+  it('serves the persisted copy with its expiry and identity after the desktop file disappears', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-store-'))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    const desktop = join(dir, 'workbuddy-desktop.info')
+    const own = join(dir, 'own.json')
+    await writeFile(desktop, nestedDoc(Date.now() - 1000))
+    let refreshes = 0
+    const store = new WorkBuddyCredentialStore({
+      desktopPath: desktop,
+      ownPath: own,
+      refresh: async () => {
+        refreshes += 1
+        return { accessToken: 'fresh', refreshToken: 'rt2', expiresInSec: 3600 }
+      },
+    })
+    await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'fresh', source: 'dsh' })
+    await rm(desktop)
+    const survived = await store.resolve()
+    expect(refreshes).toBe(1)
+    expect(survived).toMatchObject({ accessToken: 'fresh', uid: 'uid-1', enterpriseId: 'ent-1', nickname: '昵称', source: 'dsh' })
+    expect(survived.expiresAtMs).toBeGreaterThan(Date.now() + 3000_000)
+  })
+
+  it('rejects an owned copy from another format version', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-store-'))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    const own = join(dir, 'own.json')
+    await writeFile(own, JSON.stringify({ version: 99, credential: { accessToken: 'at' } }))
+    const store = new WorkBuddyCredentialStore({
+      desktopPath: join(dir, 'missing.info'),
+      ownPath: own,
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    await expect(store.resolve()).rejects.toThrow(/no signed-in WorkBuddy account/)
+  })
+
   it('fails loudly when nothing is signed in', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'wb-store-'))
     CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
