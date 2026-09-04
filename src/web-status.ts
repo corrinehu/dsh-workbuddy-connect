@@ -13,6 +13,7 @@ import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
+import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 import type { WorkBuddyWebModelBadge, WorkBuddyWebStatus } from './status-paths.ts'
 
@@ -41,16 +42,14 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
-/** Loopback browser origins only; other devices are refused until trusted origins exist. */
-function loopbackOrigin(req: IncomingMessage): boolean {
-  const origin = req.headers.origin
-  if (origin === undefined) return true
-  try {
-    const { hostname } = new URL(origin)
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1'
-  } catch {
-    return false
-  }
+/**
+ * The request must be addressed to the loopback interface, and a
+ * browser-attached Origin must be loopback too. The Host check drops
+ * DNS-rebinding pages (their Host is the attacker's domain, not loopback);
+ * the card's same-origin fetches carry no Origin and pass on Host alone.
+ */
+function loopbackRequest(req: IncomingMessage): boolean {
+  return hostIsLoopback(req.headers.host) && originIsLoopback(req.headers.origin)
 }
 
 /**
@@ -102,27 +101,34 @@ export async function workBuddyWebStatus(
   return statusWithModels
 }
 
+/** The status route's request handler, extracted so tests can mount it on a bare server. */
+export function workBuddyStatusHandler(
+  deps: WorkBuddyStatusRouteOptions,
+): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  return async (req, res) => {
+    if (req.method !== 'GET') {
+      json(res, 405, { error: 'method not allowed' })
+      return
+    }
+    if (!loopbackRequest(req)) {
+      json(res, 403, { error: 'request-not-trusted' })
+      return
+    }
+    try {
+      json(res, 200, await workBuddyWebStatus(deps))
+    } catch (error: unknown) {
+      json(res, 500, { error: safeMessage(error) })
+    }
+  }
+}
+
 /** Mount the GET status route on an optional webServer context. */
 export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatusRouteOptions): void {
   ctx.effect(() => {
     const dispose = ctx.webServer.register({
       kind: 'exact',
       path: WORKBUDDY_STATUS_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'GET') {
-          json(res, 405, { error: 'method not allowed' })
-          return
-        }
-        if (!loopbackOrigin(req)) {
-          json(res, 403, { error: 'origin-not-trusted' })
-          return
-        }
-        try {
-          json(res, 200, await workBuddyWebStatus(deps))
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
+      handler: workBuddyStatusHandler(deps),
     })
     return () => {
       dispose()
