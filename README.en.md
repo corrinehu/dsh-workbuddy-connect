@@ -12,7 +12,9 @@ Brings every model in the WorkBuddy desktop app (GLM-5.3, GLM-5.2, DeepSeek-V4-P
 
 - **Image input**: most models accept images — paste or drop one straight into the conversation (GLM-5.3-Flash, GLM-5.2, the DeepSeek-V4 series, and more); the few text-only models (e.g. GLM-5.1) clearly say so.
 
-- **Thinking effort**: the model picker lets you switch the thinking effort on models that support it — GLM-5.3 offers low / high / xhigh and GLM-5.3-Flash offers low / high / max. Models without the option cannot be adjusted and use WorkBuddy's default.
+- **Thinking effort**: whenever a model can think at all, the picker offers levels. Models whose upstream row declares an explicit set (GLM-5.3, GLM-5.3-Flash, Hy4 preview) offer exactly that set; models that only declare a default effort and no set (GLM-5.2, Kimi-K3, MiniMax-M3, the DeepSeek-V4 series) all offer `low / medium / high / xhigh / max`. Models that cannot think expose no such option.
+
+  Leaving the level unset means `Default`, which inherits the WorkBuddy server's own default effort; picking a level sends a real `reasoning_effort` upstream. `off` (disabling thinking) is offered only where a model explicitly declares it — upstream acceptance of `off` varies per model, and DeepSeek-V4-Pro and Auto answer with a 400, so they do not offer it. See [`docs/reasoning-effort.md`](./docs/reasoning-effort.md).
 
 - **Promo badges**: promo badges (`限时免费`, `夜间折扣`) ride the model name itself (e.g. `Hy4 preview · x0.00 · 限时免费`), visible wherever you pick a model; the status card also collects currently-discounted models. Per the WorkBuddy service data, synced each time DSH starts.
 

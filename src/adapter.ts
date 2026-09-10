@@ -18,6 +18,7 @@ import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyShim } from './shim.ts'
 import { normalizeCredits } from './upstream.ts'
+import type { WorkBuddyEffort } from './upstream.ts'
 
 /** Provider route this bundle owns. */
 export const WORKBUDDY_PROVIDER = 'workbuddy'
@@ -130,40 +131,72 @@ export interface WorkBuddyAdapter {
 }
 
 /**
+ * The full effort ladder offered to a model whose catalog row declares no
+ * explicit `supportedEfforts` set.
+ *
+ * Why this is offered at all, when the upstream never declared it: the catalog's
+ * old `{effort, summary}` rows do name a default but no selectable set, and the
+ * desktop app still gives some of those models a thinking control. Measured
+ * against the live endpoint, the upstream accepts every spelling here on those
+ * rows — including `xhigh`, which appears in no declared set anywhere — so
+ * offering the ladder risks nothing on the wire.
+ *
+ * `off` is deliberately absent. It is the one value the upstream actually
+ * rejects, and it rejects it per-model rather than per-shape: `deepseek-v4-pro`
+ * and `auto` answer HTTP 400 code 11150 (`invalid_reasoning_effort`) while
+ * other identically-shaped rows accept it. Since acceptance cannot be derived
+ * from the catalog row, no undeclared model is offered a control that could
+ * send it.
+ */
+const UNDECLARED_EFFORT_LADDER: readonly WorkBuddyEffort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/**
  * Resolve a WorkBuddy model's reasoning capability into pi-ai's
  * `thinkingLevelMap` (every level pinned to its wire spelling or `null` for
- * unsupported), mirroring `dsh-llm-pi-ai`'s own `resolveModelReasoning`.
+ * unsupported).
  *
- * Declared sets only: a thinking control is offered exactly when the upstream
- * catalog declares a `supportedEfforts` list, and it offers exactly the
- * declared values. Rows without a list (the older `{effort, summary}` shape)
- * get no control at all — their selectable set is client-side knowledge the
- * catalog does not carry (the desktop app differs per model there: GLM-5.2
- * gets a thinking control while MiniMax-M3 and Kimi-K2.6 do not, though their
- * catalog rows are identical), and another implementation against the same
- * upstream (workbuddy2api) gates on the declared set and downgrades
- * out-of-set values rather than passing them through, so sending an
- * undeclared value risks a 400. Such models never carry `reasoning_effort`
- * on the wire; the upstream applies its own default.
- * `off` is offered only when the model explicitly reports thinking can be
- * disabled (`canDisableThinking === true`).
+ * A control is offered whenever the model reasons at all
+ * (`supportsReasoning === true`). A model that does not reason gets no control,
+ * which is what hides the picker entry entirely.
+ *
+ * The offered set is the declared `supportedEfforts` when the catalog carries
+ * one, and {@link UNDECLARED_EFFORT_LADDER} otherwise — the old
+ * `{effort, summary}` rows name a default but no set, and the live endpoint
+ * accepts the full ladder for them.
+ *
+ * `off` is offered only against an explicit `canDisableThinking: true`. An
+ * undeclared row never gets it regardless of shape, because the upstream's
+ * rejection of `off` is per-model and not inferable from the row (see
+ * {@link UNDECLARED_EFFORT_LADDER}).
+ *
+ * The upstream's own `reasoning.effort` is deliberately *not* forwarded as a
+ * per-model default. pi-ai's descriptor has no per-model default channel: the
+ * picker's starting effort comes from `dsh-llm-pi-ai`'s
+ * `describableReasoningLevel(model, profile.reasoning)`, where `profile` is the
+ * single provider-wide profile this adapter builds. A `defaultEffort` set here
+ * is therefore inert, and writing one would claim a behavior the seam does not
+ * honor. The provider-wide default stays unset, which is what leaves the
+ * client's own "Default" row meaningful.
  */
-function reasoningFields(info: WorkBuddyModelInfo): { reasoning: boolean; thinkingLevelMap?: ThinkingLevelMap } {
+export function reasoningFields(info: WorkBuddyModelInfo): {
+  reasoning: boolean
+  thinkingLevelMap?: ThinkingLevelMap
+} {
   const reasoning = info.reasoning
   if (reasoning === undefined || reasoning.supports !== true) {
     // Not a reasoning model: pi-ai reads a falsy `reasoning` as "off only".
     return { reasoning: false }
   }
-  const efforts = reasoning.supportedEfforts
-  if (efforts === undefined || efforts.length === 0) {
-    // No declared set: no thinking control, no `reasoning_effort` on the wire
-    // — identical to the pre-#9 behavior for these rows.
-    return { reasoning: false }
-  }
+  const declared = reasoning.supportedEfforts
+  const efforts = declared !== undefined && declared.length > 0 ? declared : UNDECLARED_EFFORT_LADDER
+  // `off` needs both an explicit capability flag and a declared set to belong
+  // to; an undeclared row is never offered it.
+  const canDisable = reasoning.canDisableThinking === true
+    && declared !== undefined && declared.length > 0
   const map: Record<ModelThinkingLevel, string | null> = {
-    off: reasoning.canDisableThinking === true ? 'off' : null,
+    off: canDisable ? 'off' : null,
     // `minimal` is not in the upstream effort vocabulary (EFFORT_VALUES), so
-    // no declared set can ever contain it.
+    // no ladder can ever contain it.
     minimal: null,
     low: efforts.includes('low') ? 'low' : null,
     medium: efforts.includes('medium') ? 'medium' : null,

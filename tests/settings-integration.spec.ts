@@ -80,15 +80,18 @@ describe('WorkBuddy Host settings integration', () => {
     expect(byId.get('glm-5.2')?.description).toBeUndefined()
     expect(byId.get('glm-5.3')?.description).toBeUndefined()
 
-    // Thinking controls are declared-set-only: models whose upstream row
-    // carries `supportedEfforts` expose exactly those efforts; rows without a
-    // list (the older `{effort, summary}` shape) expose no control at all, so
-    // requests never carry `reasoning_effort` for them and the upstream
-    // default applies — matching the desktop app's own per-model gating.
+    // A reasoning model always gets a control. `auto` has no declared
+    // `supportedEfforts`, so it is offered the full undeclared ladder —
+    // `off` is excluded there because the upstream rejects it per-model.
     const autoResolved = await ctx.llm.resolveModelInfo('workbuddy', 'auto')
-    expect(autoResolved.reasoning).toBeUndefined()
+    expect(autoResolved.reasoning?.efforts.map(effort => effort.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    // A declared set is offered verbatim, and `canDisableThinking: true` is
+    // what admits `off`.
     const flashResolved = await ctx.llm.resolveModelInfo('workbuddy', 'glm-5.3-flash')
     expect(flashResolved.reasoning?.efforts.map(effort => effort.id).sort()).toEqual(['high', 'low', 'max', 'off'])
+    // A declared row without the capability flag gets no `off`.
+    const previewResolved = await ctx.llm.resolveModelInfo('workbuddy', 'hy4-preview')
+    expect(previewResolved.reasoning?.efforts.map(effort => effort.id)).toEqual(['high'])
 
     // Image modalities follow the per-model catalog flag (fallback list here):
     // image-capable entries expose `image`, glm-5.1 stays text-only.

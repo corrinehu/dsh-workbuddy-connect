@@ -18,7 +18,9 @@
 - **图片输入**：大部分模型支持发图，在对话里直接粘贴或拖入图片即可（GLM-5.3-Flash、GLM-5.2、DeepSeek-V4 系列等）；少数只支持文字的模型（如 GLM-5.1）会明确提示不支持。
 
 
-- **思考强度**：模型选择器里可为支持的模型切换思考强度，例如 GLM-5.3 可选 low / high / xhigh，GLM-5.3-Flash 可选 low / high / max；没有出现选项的模型不支持调整，使用 WorkBuddy 的默认档位。
+- **思考强度**：只要模型具备思考能力，模型选择器里就会给出档位。上游明确声明了可选集合的模型（如 GLM-5.3、GLM-5.3-Flash、Hy4 preview）按声明原样提供；只声明了默认档、没给集合的模型（如 GLM-5.2、Kimi-K3、MiniMax-M3、DeepSeek-V4 系列）统一提供 `low / medium / high / xhigh / max`。没有思考能力的模型不显示该选项。
+
+  不选档位即 `Default`，沿用 WorkBuddy 服务端自己的默认强度；选中具体档位会把 `reasoning_effort` 真实发给上游。`off`（关闭思考）只对明确声明支持关闭的模型提供——上游对 `off` 的接受度逐模型不同，DeepSeek-V4-Pro 与 Auto 会直接返回 400，故不提供。详见 [`docs/reasoning-effort.md`](./docs/reasoning-effort.md)。
 
 
 - **徽章展示**：促销徽章（限时免费、夜间折扣）直接跟在模型名后面（如 `Hy4 preview · x0.00 · 限时免费`），选模型时一眼可见；设置卡片里也会汇总当前有优惠的模型。以 WorkBuddy 服务端的数据为准，每次启动 DSH 时同步。
