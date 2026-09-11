@@ -1,4 +1,16 @@
-/** WorkBuddy status card contributed to Harness Plugin configuration. */
+/**
+ * WorkBuddy status card contributed to Harness Plugin configuration.
+ *
+ * The chrome mirrors the official card shell — see `./card-css.ts` for why the
+ * CSS module is copied rather than imported. This replaces the old
+ * hand-rolled inline `cardStyle`/`headerStyle`/... and the `⌄` glyph, which did
+ * not match the official expand/collapse card. The fix was first applied to
+ * `dsh-loomy-connect` (MIT) and ported here.
+ *
+ * Interactive primitives keep using inline styles: the WorkBuddy card shows a
+ * credit progress bar and model-offer rows that the official module has no
+ * class for, and this port deliberately stays dependency-light.
+ */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
@@ -7,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
 import type { WorkBuddyWebModelBadge, WorkBuddyWebStatus } from '../status-paths.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
+import { CSS } from './card-css.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
 export interface WorkBuddyPluginCardInjected {
@@ -20,32 +33,10 @@ export type WorkBuddyPluginCardProps =
 
 const POLL_INTERVAL_MS = 60_000
 
-const cardStyle: CSSProperties = {
-  overflow: 'hidden',
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 10,
-  background: 'var(--dsw-alias-bg-module-platform)',
+/** Join the base class with its modifier, the way the official shell does. */
+function withModifier(base: string, modifier: string, on: boolean): string {
+  return on ? `${base} ${modifier}` : base
 }
-const headerStyle: CSSProperties = {
-  boxSizing: 'border-box',
-  width: '100%',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 16,
-  border: 0,
-  padding: '13px 14px',
-  background: 'transparent',
-  color: 'var(--dsw-alias-label-primary)',
-  font: 'inherit',
-  textAlign: 'left',
-  cursor: 'pointer',
-}
-const headTextStyle: CSSProperties = { display: 'flex', minWidth: 0, flexDirection: 'column', gap: 3 }
-const nameStyle: CSSProperties = { fontSize: 14, lineHeight: '20px', fontWeight: 600 }
-const descriptionStyle: CSSProperties = { fontSize: 13, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
-const chevronStyle: CSSProperties = { flex: '0 0 auto', fontSize: 18, lineHeight: 1, transition: 'transform 120ms ease' }
-const cardBodyStyle: CSSProperties = { borderTop: '1px solid var(--dsw-alias-border-l2)', padding: '16px 14px 18px' }
 
 const bodyStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-secondary)' }
 const rowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }
@@ -221,31 +212,36 @@ export function WorkBuddyPluginCard({ t }: WorkBuddyPluginCardProps) {
       : t('signedOut')
 
   return (
-    <li style={cardStyle}>
+    <li className={withModifier(CSS.card, CSS.cardOpen, open)}>
       <button
         type="button"
-        style={headerStyle}
+        className={CSS.header}
         aria-expanded={open}
         aria-label={`${t(open ? 'collapse' : 'expand')}: ${title}`}
         onClick={() => { setOpen(!open) }}
       >
-        <span style={headTextStyle}>
-          <span style={nameStyle}>{title}</span>
-          <span style={descriptionStyle}>{t('intro')}</span>
+        <span className={CSS.headText}>
+          <span className={CSS.name}>{title}</span>
+          <span className={CSS.description}>{t('intro')}</span>
         </span>
-        <span aria-hidden="true" style={{ ...chevronStyle, transform: open ? 'rotate(180deg)' : 'none' }}>⌄</span>
+        <span
+          aria-hidden="true"
+          className={withModifier(CSS.chevron, CSS.chevronOpen, open)}
+        >⌄</span>
       </button>
       {open
-        ? <div style={cardBodyStyle}>
-            <h3 style={quotaTitleStyle}>{t('accountHeading')}</h3>
-            <div style={rowStyle}>
-              <div style={statusStyle} role="status">
-                <span aria-hidden="true" style={dotStyle(status.status)} />
-                <span>{label}</span>
+        ? <div className={CSS.body}>
+            <div className={CSS.section}>
+              <h3 className={CSS.heading}>{t('accountHeading')}</h3>
+              <div className={CSS.row}>
+                <div className={CSS.status} role="status">
+                  <span aria-hidden="true" style={dotStyle(status.status)} />
+                  <span>{label}</span>
+                </div>
+                <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void manualRefresh() }}>
+                  {busy ? t('refreshing') : t('refresh')}
+                </button>
               </div>
-              <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void manualRefresh() }}>
-                {busy ? t('refreshing') : t('refresh')}
-              </button>
             </div>
             {status.status === 'signed-in'
               ? <>
