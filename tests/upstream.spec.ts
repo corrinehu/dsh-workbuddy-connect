@@ -42,6 +42,11 @@ function fakeResponse(body: string, ok = true, status = 200): Response {
   } as unknown as Response
 }
 
+/** The (url, init) pair of the first request the stubbed `fetch` received. */
+function firstRequest(fetchMock: { mock: { calls: unknown[] } }): [string, { headers: Record<string, string> }] {
+  return fetchMock.mock.calls[0] as unknown as [string, { headers: Record<string, string> }]
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -283,5 +288,144 @@ describe('normalizeCredits', () => {
     expect(normalizeCredits('')).toBeUndefined()
     expect(normalizeCredits('   ')).toBeUndefined()
     expect(normalizeCredits('credits')).toBeUndefined()
+  })
+})
+
+/**
+ * The two sites are separate services, so every endpoint has to be asserted
+ * per region: a credential's `domain` alone decides which wire is used.
+ */
+describe('WorkBuddyUpstreamClient — global region', () => {
+  /** The same credential shape, signed in on the global site instead. */
+  const GLOBAL_CREDENTIAL: WorkBuddyCredential = {
+    ...CREDENTIAL,
+    domain: 'www.workbuddy.ai',
+  }
+
+  /** The global billing document: a flat package list with string capacities. */
+  function globalBillingEnvelope(packages: unknown[]): string {
+    return JSON.stringify({ code: 0, msg: 'ok', data: { Packages: packages } })
+  }
+
+  /** One-model catalog envelope, in the shape the China endpoint answers. */
+  function oneModelEnvelope(): string {
+    return JSON.stringify({
+      code: 0,
+      msg: 'ok',
+      data: {
+        models: [{ id: 'm-1', name: 'Model One', maxInputTokens: 1_000, maxOutputTokens: 100 }],
+        agents: [{ name: 'cli', models: ['m-1'] }],
+      },
+    })
+  }
+
+  /**
+   * The global catalog document: `/v3/config` answers the product document
+   * itself, with `models` and `agents` at the top level and no `data` wrapper.
+   */
+  function globalCatalogDocument(): string {
+    return JSON.stringify({
+      models: [
+        { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', maxInputTokens: 1_000_000, maxOutputTokens: 128_000 },
+        { id: 'gpt-6-astra', name: 'GPT-6-Astra', maxInputTokens: 1_000_000, maxOutputTokens: 128_000 },
+      ],
+      agents: [{ name: 'cli', models: ['gpt-5.6-sol', 'gpt-6-astra'] }],
+    })
+  }
+
+  it('reads the catalog from the global product document', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse(globalCatalogDocument()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const models = await new WorkBuddyUpstreamClient().fetchModels(GLOBAL_CREDENTIAL)
+    expect(firstRequest(fetchMock)[0]).toBe('https://www.workbuddy.ai/v3/config')
+    expect(models.map(model => model.id)).toEqual(['gpt-5.6-sol', 'gpt-6-astra'])
+  })
+
+  it('sends the desktop app User-Agent for the global catalog', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse(globalCatalogDocument()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await new WorkBuddyUpstreamClient().fetchModels(GLOBAL_CREDENTIAL)
+    expect(firstRequest(fetchMock)[1].headers['User-Agent']).toContain('WorkBuddyAI/')
+  })
+
+  it('keeps the China catalog path and the CLI User-Agent for a China credential', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse(oneModelEnvelope()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await new WorkBuddyUpstreamClient().fetchModels(CREDENTIAL)
+    expect(firstRequest(fetchMock)[0]).toBe('https://copilot.tencent.com/console/enterprises/personal/models')
+    expect(firstRequest(fetchMock)[1].headers['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
+  })
+
+  it('refreshes the token against the global path', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse(JSON.stringify({
+      code: 0,
+      msg: 'ok',
+      data: { accessToken: 'fresh', expiresIn: 3600 },
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const outcome = await new WorkBuddyUpstreamClient().refreshToken(GLOBAL_CREDENTIAL)
+    expect(firstRequest(fetchMock)[0]).toBe('https://www.workbuddy.ai/v2/auth/token/refresh')
+    expect(outcome.accessToken).toBe('fresh')
+    expect(outcome.expiresInSec).toBe(3600)
+  })
+
+  it('posts chat to the global chat path', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse('', true, 200))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await new WorkBuddyUpstreamClient().chatStream(GLOBAL_CREDENTIAL, '{}')
+    expect(firstRequest(fetchMock)[0]).toBe('https://www.workbuddy.ai/v2/chat/completions')
+  })
+
+  it('parses the global billing summary, whose capacities arrive as strings', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse(globalBillingEnvelope([
+      { PackageCode: 'TCACA_code_006', CycleTotalCapacity: '250', CycleRemainCapacity: '250' },
+      { PackageCode: 'TCACA_code_035', CycleTotalCapacity: '100', CycleRemainCapacity: '40' },
+    ])))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const credits = await new WorkBuddyUpstreamClient().fetchCredits(GLOBAL_CREDENTIAL)
+    expect(firstRequest(fetchMock)[0]).toBe('https://www.workbuddy.ai/billing/meter/get-user-resource-summary')
+    expect(credits.total).toBe(290)
+    expect(credits.accounts).toEqual([
+      { packageName: 'TCACA_code_006', remain: 250, size: 250 },
+      { packageName: 'TCACA_code_035', remain: 40, size: 100 },
+    ])
+  })
+
+  it('clamps a negative global remain and labels a missing package code', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(globalBillingEnvelope([
+      { PackageCode: '', CycleTotalCapacity: '10', CycleRemainCapacity: '-5' },
+    ]))))
+
+    const credits = await new WorkBuddyUpstreamClient().fetchCredits(GLOBAL_CREDENTIAL)
+    expect(credits.total).toBe(0)
+    expect(credits.accounts).toEqual([{ packageName: '(unnamed)', remain: 0, size: 10 }])
+  })
+
+  it('skips non-object global package entries', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(globalBillingEnvelope([
+      { PackageCode: 'keep', CycleTotalCapacity: 5, CycleRemainCapacity: 5 },
+      null,
+      'junk',
+    ]))))
+
+    const credits = await new WorkBuddyUpstreamClient().fetchCredits(GLOBAL_CREDENTIAL)
+    expect(credits.accounts).toEqual([{ packageName: 'keep', remain: 5, size: 5 }])
+  })
+
+  it('still uses the China billing endpoint and document for a China credential', async () => {
+    const fetchMock = vi.fn(async () => fakeResponse(billingEnvelope([
+      { PackageName: 'pkg', CycleCapacitySize: 100, CycleCapacityRemain: 7 },
+    ])))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+    expect(firstRequest(fetchMock)[0]).toBe('https://www.codebuddy.cn/v2/billing/meter/get-user-resource')
+    expect(credits.total).toBe(7)
   })
 })

@@ -109,11 +109,73 @@ export type WorkBuddyChatResult =
   | { ok: true; response: Response }
   | { ok: false; status: number; kind: UpstreamErrorKind; message: string }
 
-const CN_CHAT_BASE = 'https://copilot.tencent.com'
-const CN_BILLING_BASE = 'https://www.codebuddy.cn'
-const GLOBAL_BASE = 'https://www.workbuddy.ai'
-
+/** User-Agent of the official CLI. */
 const CLIENT_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
+
+/** User-Agent of the desktop app; see {@link RegionWire.modelsUserAgent}. */
+const APP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+  + 'WorkBuddyAI/5.5.2 Chrome/138.0.7204.251 Electron/37.10.3 Safari/537.36'
+
+/**
+ * Per-region wire shape. The two sites are separate services rather than
+ * mirrors of one another: they agree on the chat path but disagree on where
+ * the personal model catalog and billing live, and the billing endpoints
+ * answer with different documents.
+ */
+interface RegionWire {
+  /** Origin serving chat, the model catalog, and token refresh. */
+  chatBase: string
+  /** Origin serving billing; also the Origin/Referer sent with chat. */
+  billingBase: string
+  /** Chat completions path. Identical on both sites today. */
+  chatPath: string
+  /** Token refresh path. */
+  refreshPath: string
+  /** Personal model catalog path. */
+  modelsPath: string
+  /**
+   * User-Agent to send with the catalog request. The global site picks the
+   * catalog document from it: the desktop app's UA answers the current product
+   * catalog, while the CLI's UA answers an older base one that is missing
+   * models added since. Omitted where the CLI agent string is the right one.
+   */
+  modelsUserAgent?: string
+  /** Billing path, paired with {@link RegionWire.billingFlavor}. */
+  billingPath: string
+  /** Which billing document {@link RegionWire.billingPath} answers with. */
+  billingFlavor: 'legacy' | 'summary'
+}
+
+/**
+ * China wire. Billing answers `get-user-resource` with the nested
+ * `data.Response.Data.Accounts` document, whose capacity fields are numbers.
+ */
+const CN_WIRE: RegionWire = {
+  chatBase: 'https://copilot.tencent.com',
+  billingBase: 'https://www.codebuddy.cn',
+  chatPath: '/v2/chat/completions',
+  refreshPath: '/v2/plugin/auth/token/refresh',
+  modelsPath: '/console/enterprises/personal/models',
+  billingPath: '/v2/billing/meter/get-user-resource',
+  billingFlavor: 'legacy',
+}
+
+/**
+ * Global wire. The catalog is the desktop app's product document, which has to
+ * be requested with that app's User-Agent, token refresh dropped the `plugin`
+ * segment, and billing answers `get-user-resource-summary` with a flat
+ * `data.Packages` list whose capacities arrive as **strings**.
+ */
+const GLOBAL_WIRE: RegionWire = {
+  chatBase: 'https://www.workbuddy.ai',
+  billingBase: 'https://www.workbuddy.ai',
+  chatPath: '/v2/chat/completions',
+  refreshPath: '/v2/auth/token/refresh',
+  modelsPath: '/v3/config',
+  modelsUserAgent: APP_UA,
+  billingPath: '/billing/meter/get-user-resource-summary',
+  billingFlavor: 'summary',
+}
 const JSON_TIMEOUT_MS = 30_000
 const ERROR_BODY_LIMIT = 4096
 
@@ -247,16 +309,21 @@ export function regionOf(domain: string): WorkBuddyRegion {
   return 'cn'
 }
 
+/** Wire descriptor for the region a credential belongs to. */
+function wireOf(credential: WorkBuddyCredential): RegionWire {
+  return regionOf(credential.domain) === 'global' ? GLOBAL_WIRE : CN_WIRE
+}
+
 function chatBase(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_CHAT_BASE
+  return wireOf(credential).chatBase
 }
 
 function billingBase(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE
+  return wireOf(credential).billingBase
 }
 
 function originReferer(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE
+  return wireOf(credential).billingBase
 }
 
 /** Headers every upstream request shares. */
@@ -398,6 +465,11 @@ interface Envelope {
   code: number
   msg: string
   data: unknown
+  /**
+   * The parsed document as-is. Most endpoints wrap their payload in `data`,
+   * but some (the global product catalog) are the payload.
+   */
+  document: Record<string, unknown>
 }
 
 async function readEnvelope(response: Response): Promise<Envelope> {
@@ -416,6 +488,7 @@ async function readEnvelope(response: Response): Promise<Envelope> {
     code: typeof document['code'] === 'number' ? document['code'] : 0,
     msg: typeof document['msg'] === 'string' ? document['msg'] : '',
     data: 'data' in document ? document['data'] : undefined,
+    document,
   }
   return envelope
 }
@@ -439,7 +512,7 @@ export class WorkBuddyUpstreamClient {
   ): Promise<WorkBuddyChatResult> {
     let response: Response
     try {
-      response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
+      response = await fetch(`${chatBase(credential)}${wireOf(credential).chatPath}`, {
         method: 'POST',
         headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
         body: bodyJson,
@@ -460,7 +533,7 @@ export class WorkBuddyUpstreamClient {
 
   /** POST the token-refresh endpoint; the caller merges the outcome. */
   async refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome> {
-    const response = await fetch(`${chatBase(credential)}/v2/plugin/auth/token/refresh`, {
+    const response = await fetch(`${chatBase(credential)}${wireOf(credential).refreshPath}`, {
       method: 'POST',
       headers: refreshHeaders(credential),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
@@ -480,21 +553,25 @@ export class WorkBuddyUpstreamClient {
   }
 
   /** GET the personal model catalog and keep the `cli` agent's models only. */
-  async fetchModels(credential: WorkBuddyCredential): Promise<readonly WorkBuddyUpstreamModel[]> {    const response = await fetch(`${chatBase(credential)}/console/enterprises/personal/models`, {
+  async fetchModels(credential: WorkBuddyCredential): Promise<readonly WorkBuddyUpstreamModel[]> {
+    const wire = wireOf(credential)
+    const response = await fetch(`${chatBase(credential)}${wire.modelsPath}`, {
       headers: {
         'Authorization': `Bearer ${credential.accessToken}`,
         'Accept': 'application/json',
         'Origin': originReferer(credential),
         'Referer': `${originReferer(credential)}/`,
-        'User-Agent': CLIENT_UA,
+        'User-Agent': wire.modelsUserAgent ?? CLIENT_UA,
       },
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
     const envelope = await readEnvelope(response)
     if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    // China wraps the catalog in `data`; the global product document is the
+    // catalog, with `models` and `agents` at its top level.
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
-      : {}
+      : envelope.document
     const rawModels = Array.isArray(data['models']) ? data['models'] : []
     const agents = Array.isArray(data['agents']) ? data['agents'] : []
     let cliIds: readonly string[] | undefined
@@ -538,6 +615,8 @@ export class WorkBuddyUpstreamClient {
 
   /** POST the billing endpoint for the aggregated remaining credit. */
   async fetchCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits> {
+    const wire = wireOf(credential)
+    if (wire.billingFlavor === 'summary') return this.fetchCreditsSummary(credential, wire)
     const now = new Date()
     const format = (date: Date): string => [
       date.getFullYear().toString().padStart(4, '0'),
@@ -548,7 +627,7 @@ export class WorkBuddyUpstreamClient {
       date.getMinutes().toString().padStart(2, '0'),
       date.getSeconds().toString().padStart(2, '0'),
     ].join(':')
-    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/get-user-resource`, {
+    const response = await fetch(`${wire.billingBase}${wire.billingPath}`, {
       method: 'POST',
       headers: billingHeaders(credential),
       body: JSON.stringify({
@@ -599,6 +678,56 @@ export class WorkBuddyUpstreamClient {
   }
 
   /**
+   * Billing for the global wire: a flat `data.Packages` list whose capacity
+   * fields are strings ("250"), with no friendly package name - only the
+   * internal `PackageCode`.
+   */
+  private async fetchCreditsSummary(
+    credential: WorkBuddyCredential,
+    wire: RegionWire,
+  ): Promise<WorkBuddyCredits> {
+    const response = await fetch(`${wire.billingBase}${wire.billingPath}`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: '{}',
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const rawPackages = Array.isArray(data['Packages']) ? data['Packages'] : []
+    const accounts: WorkBuddyCreditAccount[] = []
+    let total = 0
+    for (const raw of rawPackages) {
+      if (typeof raw !== 'object' || raw === null) continue
+      const wrapped = raw as Record<string, unknown>
+      const numberField = (key: string): number => {
+        const value = wrapped[key]
+        if (typeof value === 'number') return value
+        if (typeof value === 'string') {
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : 0
+        }
+        return 0
+      }
+      const size = numberField('CycleTotalCapacity')
+      let remain = numberField('CycleRemainCapacity')
+      if (remain < 0) remain = 0
+      total += remain
+      accounts.push({
+        packageName: typeof wrapped['PackageCode'] === 'string' && wrapped['PackageCode'] !== ''
+          ? wrapped['PackageCode']
+          : '(unnamed)',
+        remain,
+        size: size > 0 ? size : 0,
+      })
+    }
+    return { total, accounts }
+  }
+
+  /**
    * One probe request: a real streaming chat call carrying the effort under
    * test.
    *
@@ -627,7 +756,7 @@ export class WorkBuddyUpstreamClient {
 
     let response: Response
     try {
-      response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
+      response = await fetch(`${chatBase(credential)}${wireOf(credential).chatPath}`, {
         method: 'POST',
         headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
         body: JSON.stringify(payload),
