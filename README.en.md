@@ -40,18 +40,20 @@ For models without declared levels, Web and Desktop instead use user-authorized,
 
 Prerequisite: the WorkBuddy desktop app is installed and signed in (the plugin reuses the app's sign-in state and follows account switches automatically).
 
+Both the CN WorkBuddy app and the international **WorkBuddy AI** app are supported. The plugin discovers their respective login files and fetches CLI models, rates, and promotions from the matching service. When both apps are signed in, the CN app takes precedence; use `authFile` to select the international login explicitly.
+
 **Match the plugin version to your DSH core** — a mismatched combination fails to start DSH:
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
-| **0.3.2+** | `0.1.5-rc.1` or newer | wait for the app's bundled core to follow |
-| **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5`+ recommended |
+| **0.3.2+** | `0.1.5-rc.1` or newer | `2.0.9` / `2.0.9-beta.1` |
+| **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` (check the bundled core for other releases) |
 | **0.2.6** | `0.1.1-rc.2` (older line) | `2.0.3` / `2.0.4` |
 
 - On DSH `0.1.5-rc.1` or newer, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`
 - Still on DSH `0.1.2-rc.1`? Stay on `0.3.1`: `dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - Still on DSH `0.1.1-rc.2`? Stay on the older release: `dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
-- The desktop app (`2.0.5` today, bundled core still `0.1.2-rc.1`) should stay on `0.3.1` until its bundled core reaches `0.1.5`
+- Desktop `2.0.9` / `2.0.9-beta.1` bundles `0.1.5-rc.1`: use the current plugin `0.4.0` instead of keeping `0.3.0` / `0.3.1` pinned. See [Desktop v2.0.9 upstream.json](https://github.com/anywhere-labs/dsh-desktop/blob/v2.0.9/upstream.json). Check the actual bundled core when using later Desktop releases.
 
 The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI**. Pick the install command that matches the profile you use.
 

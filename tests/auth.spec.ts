@@ -208,9 +208,9 @@ describe('WorkBuddyCredentialStore', () => {
 })
 
 describe('Windows default desktop path probing', () => {
-  function windowsDoc(token: string): string {
+  function windowsDoc(token: string, domain = 'www.codebuddy.cn'): string {
     return JSON.stringify({
-      auth: { accessToken: token, refreshToken: 'rt', expiresAt: Date.now() + 3600_000, domain: 'www.codebuddy.cn' },
+      auth: { accessToken: token, refreshToken: 'rt', expiresAt: Date.now() + 3600_000, domain },
       account: { uid: 'uid-w', nickname: 'Win 用户' },
     })
   }
@@ -245,7 +245,11 @@ describe('Windows default desktop path probing', () => {
     const { home, local, roaming } = await fakeWindowsHome()
     await asWindows(home, async () => {
       const candidates = defaultDesktopAuthCandidates()
-      expect(candidates).toEqual([local, roaming])
+      expect(candidates).toEqual([
+        local, roaming,
+        local.replace('workbuddy-desktop.info', 'workbuddy-desktop-ai.info'),
+        roaming.replace('workbuddy-desktop.info', 'workbuddy-desktop-ai.info'),
+      ])
     })
   })
 
@@ -260,6 +264,33 @@ describe('Windows default desktop path probing', () => {
       })
       await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'at-local', source: 'desktop' })
       await expect(store.desktopFilePresent()).resolves.toBe(true)
+    })
+  })
+
+  it('discovers the international AI login without reading domestic logout archives', async () => {
+    const { home, local } = await fakeWindowsHome()
+    const ai = local.replace('workbuddy-desktop.info', 'workbuddy-desktop-ai.info')
+    await mkdir(join(local, '..'), { recursive: true })
+    await writeFile(`${local}.logged-out`, '{}')
+    await writeFile(ai, windowsDoc('at-ai', 'www.workbuddy.ai'))
+    await asWindows(home, async () => {
+      const store = new WorkBuddyCredentialStore({
+        ownPath: join(home, 'own.json'),
+        refresh: async credential => ({ accessToken: credential.accessToken }),
+      })
+      await expect(store.current()).resolves.toMatchObject({ accessToken: 'at-ai' })
+      expect(store.desktopAuthPath()).toBe(ai)
+      await writeFile(join(home, 'own.json'), JSON.stringify({
+        version: 1,
+        credential: {
+          accessToken: 'different-account', refreshToken: '', expiresAtMs: Number.MAX_SAFE_INTEGER,
+          uid: 'different-user', domain: 'www.workbuddy.ai',
+        },
+      }))
+      await expect(store.current()).resolves.toMatchObject({ accessToken: 'at-ai' })
+      await rm(join(home, 'own.json'))
+      store.setDesktopPath(local)
+      await expect(store.current()).resolves.toBeUndefined()
     })
   })
 
@@ -365,6 +396,9 @@ describe('WSL default desktop path probing', () => {
         join('/mnt/c/Users/alice/AppData/Local', AUTH_TAIL),
         join('/mnt/c/Users/alice/AppData/Roaming', AUTH_TAIL),
         join('/home/alice/.config', AUTH_TAIL),
+        join('/mnt/c/Users/alice/AppData/Local', AUTH_TAIL.replace('workbuddy-desktop.info', 'workbuddy-desktop-ai.info')),
+        join('/mnt/c/Users/alice/AppData/Roaming', AUTH_TAIL.replace('workbuddy-desktop.info', 'workbuddy-desktop-ai.info')),
+        join('/home/alice/.config', AUTH_TAIL.replace('workbuddy-desktop.info', 'workbuddy-desktop-ai.info')),
       ])
     })
   })

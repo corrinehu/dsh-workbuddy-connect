@@ -8,6 +8,7 @@
  * @module dsh-workbuddy-connect/auth
  */
 
+import { existsSync } from 'node:fs'
 import { readFile, rm, stat } from 'node:fs/promises'
 import { homedir, release } from 'node:os'
 import { basename, join } from 'node:path'
@@ -110,7 +111,7 @@ function wslDesktopAuthCandidates(home: string): string[] {
  * those same Windows locations through its mounted Windows profile before the
  * native Linux location.
  */
-export function defaultDesktopAuthCandidates(): string[] {
+function domesticDesktopAuthCandidates(): string[] {
   const home = homedir()
   if (process.platform === 'darwin') {
     return [join(home, 'Library', 'Application Support', 'CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')]
@@ -126,6 +127,18 @@ export function defaultDesktopAuthCandidates(): string[] {
     return isWsl() ? [...wslDesktopAuthCandidates(home), linux] : [linux]
   }
   return []
+}
+
+/**
+ * Platform-default candidates for both desktop products, in probe order.
+ * Domestic WorkBuddy uses `workbuddy-desktop.info`; international WorkBuddy AI
+ * uses `workbuddy-desktop-ai.info` in the same auth directory. Windows probes
+ * Local then Roaming AppData, while WSL probes their mounted equivalents before
+ * the native Linux location.
+ */
+export function defaultDesktopAuthCandidates(): string[] {
+  const domestic = domesticDesktopAuthCandidates()
+  return [...domestic, ...domestic.map(path => path.replace(/workbuddy-desktop\.info$/u, 'workbuddy-desktop-ai.info'))]
 }
 
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
@@ -272,7 +285,8 @@ export class WorkBuddyCredentialStore {
   }
 
   private resolveDesktopPath(): string | undefined {
-    return this.resolveDesktopCandidates()[0]
+    const candidates = this.resolveDesktopCandidates()
+    return candidates.find(path => existsSync(path)) ?? candidates[0]
   }
 
   /**
@@ -297,6 +311,8 @@ export class WorkBuddyCredentialStore {
     const [desktop, own] = await Promise.all([this.readDesktop(), this.readOwn()])
     if (desktop === undefined) return own
     if (own === undefined) return desktop
+    // A refreshed CN/previous-account token must not override the active AI login.
+    if (desktop.uid !== own.uid || desktop.domain !== own.domain) return desktop
     return own.expiresAtMs > desktop.expiresAtMs ? own : desktop
   }
 

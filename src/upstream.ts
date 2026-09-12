@@ -113,7 +113,13 @@ const CN_CHAT_BASE = 'https://copilot.tencent.com'
 const CN_BILLING_BASE = 'https://www.codebuddy.cn'
 const GLOBAL_BASE = 'https://www.workbuddy.ai'
 
-const CLIENT_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
+const CN_CLIENT_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
+const GLOBAL_CLIENT_UA = 'CLI/2.63.2 WorkBuddy/2.63.2'
+
+/** The international service selects its product catalog from the UA brand. */
+function clientUserAgent(credential: WorkBuddyCredential): string {
+  return regionOf(credential.domain) === 'global' ? GLOBAL_CLIENT_UA : CN_CLIENT_UA
+}
 const JSON_TIMEOUT_MS = 30_000
 const ERROR_BODY_LIMIT = 4096
 
@@ -266,7 +272,7 @@ function commonHeaders(credential: WorkBuddyCredential): Record<string, string> 
     'X-Requested-With': 'XMLHttpRequest',
     'Origin': originReferer(credential),
     'Referer': `${originReferer(credential)}/`,
-    'User-Agent': CLIENT_UA,
+    'User-Agent': clientUserAgent(credential),
   }
 }
 
@@ -479,14 +485,24 @@ export class WorkBuddyUpstreamClient {
     return outcome
   }
 
-  /** GET the personal model catalog and keep the `cli` agent's models only. */
-  async fetchModels(credential: WorkBuddyCredential): Promise<readonly WorkBuddyUpstreamModel[]> {    const response = await fetch(`${chatBase(credential)}/console/enterprises/personal/models`, {
+  /** WorkBuddy AI publishes its CLI roster in cloud config, not the CN console API. */
+  async fetchModels(credential: WorkBuddyCredential): Promise<readonly WorkBuddyUpstreamModel[]> {
+    const global = regionOf(credential.domain) === 'global'
+    const path = global
+      ? '/v3/config'
+      : '/console/enterprises/personal/models'
+    const response = await fetch(`${chatBase(credential)}${path}`, {
       headers: {
+        ...commonHeaders(credential),
         'Authorization': `Bearer ${credential.accessToken}`,
-        'Accept': 'application/json',
-        'Origin': originReferer(credential),
-        'Referer': `${originReferer(credential)}/`,
-        'User-Agent': CLIENT_UA,
+        ...(global ? {
+          'X-Product': 'SaaS',
+          ...(credential.uid === '' ? {} : { 'X-User-Id': credential.uid }),
+          ...(credential.enterpriseId === undefined || credential.enterpriseId === ''
+            ? {}
+            : { 'X-Enterprise-Id': credential.enterpriseId }),
+          ...(credential.domain === '' ? {} : { 'X-Domain': credential.domain }),
+        } : {}),
       },
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })

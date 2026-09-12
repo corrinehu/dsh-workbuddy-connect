@@ -49,18 +49,20 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 
 前置：已安装并登录 WorkBuddy 桌面 App（插件复用 App 的登录状态，账号切换自动跟随）。
 
+同时支持国内版 WorkBuddy 和国际版 **WorkBuddy AI**。插件会识别两者各自的登录文件，并从对应服务获取 CLI 模型目录、倍率和优惠；两版同时登录时默认使用国内版，可通过 `authFile` 指定国际版登录文件。
+
 **版本对应（重要）**：本插件与 DSH 核心版本一一对应，不可混用——不匹配的组合会导致 DSH 启动失败：
 
 | 插件版本 | 要求的 DSH 核心 | 桌面 App |
 |---|---|---|
-| **0.3.2+** | `0.1.5-rc.1` 及以上 | 待 App 内置核心跟进 |
-| **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5`+ |
+| **0.3.2+** | `0.1.5-rc.1` 及以上 | `2.0.9` / `2.0.9-beta.1` |
+| **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5`（其他版本以实际内置核心为准） |
 | **0.2.6** | `0.1.1-rc.2`（旧线） | `2.0.3` / `2.0.4` |
 
 - DSH `0.1.5-rc.1` 及以上的用户，正常安装最新版即可：`dsh plugin --profile web add dsh-workbuddy-connect`
 - 还在用 DSH `0.1.2-rc.1` 的用户，请停留在 `0.3.1`：`dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - 还在用 DSH `0.1.1-rc.2` 的用户，请停留在 `0.2.6`：`dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
-- 桌面 App（当前 `2.0.5`，内置核心仍为 `0.1.2-rc.1`）请在 App 内核跟进 `0.1.5` 前继续使用 `0.3.1`
+- Desktop `2.0.9` / `2.0.9-beta.1` 已内置 `0.1.5-rc.1`，请使用当前插件 `0.4.0`，不要继续固定在 `0.3.0` / `0.3.1`。版本依据见 [Desktop v2.0.9 的 upstream.json](https://github.com/anywhere-labs/dsh-desktop/blob/v2.0.9/upstream.json)；后续 Desktop 版本请核对实际内置核心。
 
 插件在三种 DSH 界面下均可运行：**Web**、**Desktop**、**TUI**。根据你使用的 profile 选对应命令安装。
 

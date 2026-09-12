@@ -191,7 +191,7 @@ declare class WorkBuddyUpstreamClient {
   chatStream(credential: WorkBuddyCredential, bodyJson: string, signal?: AbortSignal): Promise<WorkBuddyChatResult>;
   /** POST the token-refresh endpoint; the caller merges the outcome. */
   refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome>;
-  /** GET the personal model catalog and keep the `cli` agent's models only. */
+  /** WorkBuddy AI publishes its CLI roster in cloud config, not the CN console API. */
   fetchModels(credential: WorkBuddyCredential): Promise<readonly WorkBuddyUpstreamModel[]>;
   /** POST the billing endpoint for the aggregated remaining credit. */
   fetchCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits>;
@@ -252,11 +252,11 @@ declare const WORKBUDDY_AUTH_FILE_ENV = "WORKBUDDY_AUTH_FILE";
 /** Plugin-owned copy path inside the Harness home. */
 declare function workbuddyOwnAuthPath(): string;
 /**
- * Platform-default candidates for the WorkBuddy desktop app's auth file, in
- * probe order. Windows probes both AppData roots: current builds write under
- * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). WSL probes
- * those same Windows locations through its mounted Windows profile before the
- * native Linux location.
+ * Platform-default candidates for both desktop products, in probe order.
+ * Domestic WorkBuddy uses `workbuddy-desktop.info`; international WorkBuddy AI
+ * uses `workbuddy-desktop-ai.info` in the same auth directory. Windows probes
+ * Local then Roaming AppData, while WSL probes their mounted equivalents before
+ * the native Linux location.
  */
 declare function defaultDesktopAuthCandidates(): string[];
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */

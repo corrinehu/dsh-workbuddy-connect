@@ -47,6 +47,22 @@ afterEach(() => {
 })
 
 describe('WorkBuddyUpstreamClient.fetchModels', () => {
+  it('uses authenticated cloud config for the international app and preserves current free pricing', async () => {
+    const request = vi.fn(async () => fakeResponse(modelsEnvelope([
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 50_000, credits: 'x0.00' },
+      { id: 'deepseek-v4-flash', name: 'Old model', maxInputTokens: 1_000_000, maxOutputTokens: 50_000 },
+    ], ['deepseek-v4.1-flash'])))
+    vi.stubGlobal('fetch', request)
+    const models = await new WorkBuddyUpstreamClient().fetchModels({ ...CREDENTIAL, domain: 'www.workbuddy.ai' })
+    expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash'])
+    expect(models[0]?.billing).toEqual({ credits: 'x0.00', free: true })
+    expect(request).toHaveBeenCalledWith('https://www.workbuddy.ai/v3/config', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer at', 'User-Agent': 'CLI/2.63.2 WorkBuddy/2.63.2' }),
+    }))
+    const headers = (request.mock.calls[0] as unknown as [string, RequestInit])[1].headers as Record<string, string>
+    expect(headers['X-Refresh-Token']).toBeUndefined()
+  })
+
   /** Build the models-catalog envelope that `fetchModels` unwraps. */
   function modelsEnvelope(models: unknown[], cliIds: string[]): string {
     return JSON.stringify({
