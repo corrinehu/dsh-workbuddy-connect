@@ -6,6 +6,7 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
 import type { WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
+import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -195,7 +196,13 @@ function progressFillStyle(percent: number): CSSProperties {
   }
 }
 
-function dotStyle(status: WorkBuddyWebStatus['status']): CSSProperties {
+/**
+ * Status dot colour. Takes `'loading'` as well as the document's own states:
+ * before the first response the card knows nothing about the account, so it must
+ * not borrow the signed-out grey — that would read as "nothing is wrong, nobody
+ * is signed in" when the truth is "not read yet".
+ */
+function dotStyle(status: 'loading' | WorkBuddyWebStatus['status']): CSSProperties {
   const color = status === 'signed-in'
     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
     : status === 'error'
@@ -212,31 +219,51 @@ function formatTime(ms: number): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms))
 }
 
-/** One billing package as a labeled progress bar. */
+/**
+ * One billing package as a labeled progress bar.
+ *
+ * A package whose allowance the upstream never reported (`size` not positive)
+ * has no percentage to state. It must not fall back to 100%: the plugin would be
+ * claiming a full quota it knows nothing about, which is the opposite of the
+ * honest "remaining N" line printed below it. Unknown size therefore renders the
+ * percent slot as unknown copy and an unfilled, indeterminate track.
+ */
 function CreditBar({ label, remain, size, t }: {
   label: string
   remain: number
   size: number
   t: WorkBuddyPluginCardInjected['t']
 }): React.ReactNode {
-  const detail = size > 0 ? t('exactRemaining', { remain: formatNumber(remain), size: formatNumber(size) }) : t('creditPackageUnknownSize', { remain: formatNumber(remain) })
-  const percent = size > 0 ? (remain / size) * 100 : 100
-  const display = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(percent)
+  const sizeKnown = size > 0
+  const detail = sizeKnown
+    ? t('exactRemaining', { remain: formatNumber(remain), size: formatNumber(size) })
+    : t('creditPackageUnknownSize', { remain: formatNumber(remain) })
+  const percent = sizeKnown ? (remain / size) * 100 : undefined
+  const display = percent === undefined
+    ? t('percentUnknown')
+    : t('percentRemaining', {
+      percent: new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(percent),
+    })
   return (
     <div style={quotaGroupStyle}>
       <div style={quotaLabelStyle}>
         <span>{label}</span>
-        <span>{t('percentRemaining', { percent: display })}</span>
+        <span>{display}</span>
       </div>
       <div
         style={progressTrackStyle}
         role="progressbar"
         aria-label={label}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
+        /*
+         * No numeric value when the size is unknown: the range attributes are
+         * omitted so assistive technology reports an indeterminate bar rather
+         * than a second, louder repeat of the false 100%.
+         */
+        {...percent === undefined
+          ? { 'aria-valuetext': detail }
+          : { 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': percent }}
       >
-        <div style={progressFillStyle(percent)} />
+        {percent === undefined ? null : <div style={progressFillStyle(percent)} />}
       </div>
       <p style={bodyStyle}>{detail}</p>
     </div>
@@ -489,7 +516,30 @@ function ProbeSection({ probe, t, onDetect, onClear, busy }: {
 export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyPluginCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
   const [open, setOpen] = useState(false)
-  const [status, setStatus] = useState<WorkBuddyWebStatus>({ status: 'signed-out' })
+  /**
+   * The document to render. `undefined` means *not read yet*, which is a
+   * distinct state from "signed out": seeding this with a signed-out document
+   * told an already-signed-in user they were signed out for the whole first
+   * round trip (and forever, if the read never settled).
+   */
+  const [status, setStatus] = useState<WorkBuddyWebStatus>()
+  /**
+   * Whether the last **successful** read found a usable credential.
+   *
+   * Kept apart from `status` because the poll's liveness must depend on what the
+   * account actually is, not on what the card last displayed: a failed read
+   * leaves this untouched, so a transient failure cannot disarm the interval,
+   * while a genuine signed-out answer still stops it.
+   *
+   * `undefined` therefore means "no successful read yet", which is also the
+   * condition that decides whether a failed read has anything to preserve.
+   */
+  const [signedIn, setSignedIn] = useState<boolean>()
+  /**
+   * Why the most recent read failed, when it did. Rendered as a notice beside
+   * whatever document is still on screen, rather than replacing it.
+   */
+  const [readFailure, setReadFailure] = useState<string>()
   const [busy, setBusy] = useState(false)
   // Three tabs. Default is the live status plus the one action the card
   // carries; the two reference sets — context capacity, then rates and the
@@ -497,13 +547,50 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   // you watch.
   const [tab, setTab] = useState<'status' | 'context' | 'details'>('status')
   const mounted = useRef(true)
+  /**
+   * Identity of the newest read that may write. Assigned when a read *starts*,
+   * so a response is superseded by anything begun after it — "the response whose
+   * request started last wins". Without this, a slow poll begun before a manual
+   * action could settle after the action's own refresh and restore the older
+   * document.
+   */
+  const readSeq = useRef(0)
+  /** Manual requests in flight, so unmount can abort them like the poll's. */
+  const manualControllers = useRef(new Set<AbortController>())
 
   useEffect(() => {
     mounted.current = true
-    return () => { mounted.current = false }
+    return () => {
+      mounted.current = false
+      for (const controller of manualControllers.current) controller.abort()
+      manualControllers.current.clear()
+    }
   }, [])
 
-  const refresh = useCallback(async (signal?: AbortSignal): Promise<void> => {
+  /** Register a manual request's controller so unmount aborts it. */
+  const trackController = useCallback((): AbortController => {
+    const controller = new AbortController()
+    manualControllers.current.add(controller)
+    return controller
+  }, [])
+
+  /**
+   * Read the status document and apply it under the two policies the card's
+   * correctness rests on:
+   *
+   * - a non-document body (empty, `null`, a non-JSON page) is a failed read, not
+   *   something to store and then dereference in the render;
+   * - a failed read never discards a document already on screen. It is recorded
+   *   and shown as a notice beside that document; only when nothing has been
+   *   read yet does the failure itself become the rendered state.
+   *
+   * Returns whether this read produced the current document.
+   */
+  const refresh = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
+    const seq = ++readSeq.current
+    // Superseded (a newer read started) or unmounted: write nothing, report
+    // nothing. A dropped response must not surface as a failure of its own.
+    const current = (): boolean => mounted.current && signal?.aborted !== true && seq === readSeq.current
     try {
       const response = await fetch(variant.statusPath, {
         headers: { accept: 'application/json' },
@@ -512,11 +599,25 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
       })
       const value: unknown = await response.json().catch(() => undefined)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      if (mounted.current && signal?.aborted !== true) setStatus(value as WorkBuddyWebStatus)
+      if (!isWorkBuddyWebStatus(value)) throw new Error(t('statusResponseInvalid'))
+      if (!current()) return false
+      setStatus(value)
+      // Only a document that states the session may move the poll gate. An
+      // `error` document (which only a failed read produces, and which the host
+      // never sends) says nothing about the account, so it must not stop the
+      // interval — that would strand the card on a state it cannot leave.
+      if (value.status === 'signed-in') setSignedIn(true)
+      else if (value.status === 'signed-out') setSignedIn(false)
+      setReadFailure(undefined)
+      return true
     } catch (error: unknown) {
-      if (mounted.current && signal?.aborted !== true) {
-        setStatus({ status: 'error', message: error instanceof Error ? error.message : t('requestFailed') })
+      const message = error instanceof Error ? error.message : t('requestFailed')
+      if (current()) {
+        setReadFailure(message)
+        // Nothing on screen to preserve: the failure is all there is to show.
+        setStatus(previous => previous === undefined ? { status: 'error', message } : previous)
       }
+      return false
     }
   }, [t, variant.statusPath])
 
@@ -528,20 +629,25 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   }, [open, refresh])
 
   useEffect(() => {
-    if (!open || status.status !== 'signed-in') return
+    // Gated on the last successful read, never on the rendered document: a
+    // failed read must not be able to disarm this effect, or one transient
+    // error would leave the card blank until the user clicked Refresh.
+    if (!open || signedIn === false) return
     const controller = new AbortController()
     const timer = window.setInterval(() => { void refresh(controller.signal) }, POLL_INTERVAL_MS)
     return () => {
       window.clearInterval(timer)
       controller.abort()
     }
-  }, [open, refresh, status.status])
+  }, [open, refresh, signedIn])
 
   const manualRefresh = async (): Promise<void> => {
     setBusy(true)
+    const controller = trackController()
     try {
-      await refresh()
+      await refresh(controller.signal)
     } finally {
+      manualControllers.current.delete(controller)
       if (mounted.current) setBusy(false)
     }
   }
@@ -555,27 +661,36 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
    * than thrown away, so the reason survives the round trip.
    */
   const refreshModels = useCallback(async (): Promise<void> => {
-    const key = status.status === 'signed-in' ? status.probeKey : undefined
+    const key = status?.status === 'signed-in' ? status.probeKey : undefined
     if (key === undefined) return
     setBusy(true)
+    const controller = trackController()
     try {
       const response = await fetch(variant.probePath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-WorkBuddy-Probe-Key': key },
         credentials: 'same-origin',
+        signal: controller.signal,
         body: JSON.stringify({ action: 'refresh' }),
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
     } catch (error: unknown) {
-      if (mounted.current) {
-        setStatus(previous => ({ status: 'error', message: error instanceof Error ? error.message : t('requestFailed') }))
+      if (mounted.current && controller.signal.aborted !== true) {
+        // A rejected write is reported beside the document, exactly like a
+        // failed read: replacing it would take the account, credits and model
+        // list away over one failed action — the harm §3 of the confirmation
+        // document removes for reads, and identical here. Aborts stay silent.
+        setReadFailure(error instanceof Error ? error.message : t('requestFailed'))
       }
       return
     } finally {
+      manualControllers.current.delete(controller)
       if (mounted.current) setBusy(false)
     }
-    await refresh()
-  }, [refresh, status, t, variant.probePath])
+    // Started after the write resolves, so this read outranks any poll that
+    // began earlier and the refreshed list is what stays on screen.
+    await refresh(controller.signal)
+  }, [refresh, status, t, trackController, variant.probePath])
 
   /**
    * Run one control action and refresh the card's state afterwards.
@@ -585,14 +700,16 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
    * catalog from here.
    */
   const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' }): Promise<void> => {
-    const key = status.status === 'signed-in' ? status.probeKey : undefined
+    const key = status?.status === 'signed-in' ? status.probeKey : undefined
     if (key === undefined) return
     setBusy(true)
+    const controller = trackController()
     try {
       const response = await fetch(variant.probePath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-WorkBuddy-Probe-Key': key },
         credentials: 'same-origin',
+        signal: controller.signal,
         body: JSON.stringify(action),
       })
       const value: unknown = await response.json().catch(() => undefined)
@@ -602,15 +719,20 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
           : `HTTP ${response.status}`
         throw new Error(message)
       }
-      await refresh()
+      await refresh(controller.signal)
     } catch (error: unknown) {
-      if (mounted.current) {
-        setStatus(previous => ({ status: 'error', message: error instanceof Error ? error.message : t('requestFailed') }))
+      if (mounted.current && controller.signal.aborted !== true) {
+        // Same policy as a failed read and as `refreshModels`: the reason is
+        // reported beside the document, never in place of it. A detection that
+        // did not complete must not erase the account and credit figures the
+        // user was reading. Aborts stay silent.
+        setReadFailure(error instanceof Error ? error.message : t('requestFailed'))
       }
     } finally {
+      manualControllers.current.delete(controller)
       if (mounted.current) setBusy(false)
     }
-  }, [refresh, status, t, variant.probePath])
+  }, [refresh, status, t, trackController, variant.probePath])
 
   /**
    * Start a detection. Confirmation happens inline in the section, so this is
@@ -621,11 +743,17 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   }, [control])
 
   const title = t(variant.titleKey)
-  const label = status.status === 'signed-in'
-    ? status.nickname === undefined ? t('signedInAs', { nickname: '' }).trimEnd().replace(/[:：]$/, '') : t('signedInAs', { nickname: status.nickname })
-    : status.status === 'error'
-      ? t('requestFailed')
-      : t('signedOut')
+  /*
+   * `undefined` is "not read yet" and gets its own copy. It is not signed-out:
+   * claiming that would be false for a user who is in fact signed in.
+   */
+  const label = status === undefined
+    ? t('loading')
+    : status.status === 'signed-in'
+      ? status.nickname === undefined ? t('signedInAs', { nickname: '' }).trimEnd().replace(/[:：]$/, '') : t('signedInAs', { nickname: status.nickname })
+      : status.status === 'error'
+        ? t('requestFailed')
+        : t('signedOut')
 
   return (
     <li style={cardStyle}>
@@ -646,15 +774,28 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
         ? <div style={cardBodyStyle}>
             <h3 style={quotaTitleStyle}>{t('accountHeading')}</h3>
             <div style={rowStyle}>
-              <div style={statusStyle} role="status">
-                <span aria-hidden="true" style={dotStyle(status.status)} />
+              {/* `aria-busy` while nothing has been read: the value is pending, not absent. */}
+              <div style={statusStyle} role="status" aria-busy={status === undefined}>
+                <span aria-hidden="true" style={dotStyle(status === undefined ? 'loading' : status.status)} />
                 <span>{label}</span>
               </div>
               <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void manualRefresh() }}>
                 {busy ? t('refreshing') : t('refresh')}
               </button>
             </div>
-            {status.status === 'signed-in'
+            {/*
+              * A failed read is reported beside the document still on screen,
+              * never in place of it: blanking the card over one transient error
+              * loses the account, credits and model list the user was reading.
+              * Cleared by the next successful read. `signedIn === undefined`
+              * means no read has ever succeeded, so there is nothing to
+              * annotate — the error state below already states the failure on
+              * its own, exactly as it did before this notice existed.
+            */}
+            {readFailure === undefined || signedIn === undefined
+              ? null
+              : <p style={errorStyle}>{t('statusRefreshFailed', { message: readFailure })}</p>}
+            {status?.status === 'signed-in'
               ? <>
                   {status.expiresAt === undefined ? null
                     : <p style={bodyStyle}>{t('accessTokenExpires', { time: formatTime(status.expiresAt) })}</p>}
@@ -773,7 +914,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                   )}
                 </>
               : null}
-            {status.status === 'signed-out'
+            {status?.status === 'signed-out'
               // A mismatch explanation replaces the generic hint: telling a user
               // to "sign in" is wrong advice when a credential was found and
               // rejected for belonging to the other product.
@@ -781,7 +922,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                   {status.reason ?? t(variant.signedOutKey)}
                 </p>
               : null}
-            {status.status === 'error' ? <p style={errorStyle}>{status.message}</p> : null}
+            {status?.status === 'error' ? <p style={errorStyle}>{status.message}</p> : null}
           </div>
         : null}
     </li>

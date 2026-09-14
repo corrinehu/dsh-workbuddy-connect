@@ -256,11 +256,24 @@ describe('per-variant route mount', () => {
 
   it('reports where the served model list came from', async () => {
     const catalog = new WorkBuddyCatalog(FALLBACK_WORKBUDDY_AI_MODELS)
+    // Provenance rides the *signed-in* document, so this case needs a credential
+    // of its own: with no stub the store probes the ambient desktop file and the
+    // answer depends on whether this machine happens to have the WorkBuddy AI
+    // app signed in. The stub is the same one the neighbouring cases use.
+    const root = await mkdtemp(join(tmpdir(), 'wb-routes-'))
+    CLEANUP.push(() => rm(root, { recursive: true, force: true }))
+    await writeFile(join(root, 'ai.info'), credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', join(root, 'ai.info'))
     const server = await mount(AI_VARIANT, { catalog })
     const body = JSON.parse((await requestOnce({
       port: server.port, method: 'GET', path: AI_VARIANT.statusPath,
       headers: { host: `127.0.0.1:${server.port}` },
     })).body) as Record<string, unknown>
+    // Pin that the stubbed credential really signed the card in: `catalog` is
+    // omitted entirely on the signed-out branch, so a broken fixture would make
+    // the provenance assertion below fail for the wrong reason.
+    expect(body['status']).toBe('signed-in')
     // Without provenance a stale list is indistinguishable from a fresh one.
     expect(body['catalog']).toMatchObject({ source: 'fallback' })
   })

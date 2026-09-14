@@ -24,6 +24,7 @@ import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore }
 import type { CSSProperties } from 'react'
 import type { ModelDirectory } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { CARD_VARIANTS, type WorkBuddyCardVariant, type WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
+import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddyWebProbeModel, WorkBuddyWebStatus } from '../status-paths.ts'
 
 /** Injected props; `directory` resolves the session's current model selection. */
@@ -207,6 +208,13 @@ function resultFor(status: WorkBuddyWebStatus, model: string): WorkBuddyWebProbe
 /**
  * The one-line tooltip: current state first, then what a click does — the same
  * two-part shape Fast Mode uses.
+ *
+ * A recorded result outranks a remembered failure. `failed` only means "the last
+ * run from this control did not complete"; the host can record a result for the
+ * same model at any time (a detection started from the settings card, another
+ * conversation, or a finished sweep), and the levels the user paid for are the
+ * more useful answer than the stale failure. Failure copy is what remains when
+ * there is no result to report.
  */
 function tooltipText(
   t: WorkBuddyPluginCardInjected['t'],
@@ -214,14 +222,16 @@ function tooltipText(
   state: { busy: boolean; failed: boolean; result?: WorkBuddyWebProbeModel | undefined },
 ): string {
   if (state.busy) return t('probeRunning', { model })
-  if (state.failed) return t('probeTooltipRetry')
   const result = state.result
-  if (result === undefined) return t('probeTooltipIdle', { model })
-  if (result.validation === 'validating' && result.efforts.length > 0) {
-    return t('probeTooltipVerified', { levels: result.efforts.join(' / ') })
+  if (result !== undefined) {
+    if (result.validation === 'validating' && result.efforts.length > 0) {
+      return t('probeTooltipVerified', { levels: result.efforts.join(' / ') })
+    }
+    if (result.validation === 'non-validating') return t('probeTooltipNotValidating')
+    return t('probeTooltipRetry')
   }
-  if (result.validation === 'non-validating') return t('probeTooltipNotValidating')
-  return t('probeTooltipRetry')
+  if (state.failed) return t('probeTooltipRetry')
+  return t('probeTooltipIdle', { model })
 }
 
 /** Model-independent shell: resolves the selection, then delegates per model. */
@@ -264,9 +274,17 @@ function ModelProbe({ model, card, label, t }: {
       ...(signal === undefined ? {} : { signal }),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const value = await response.json() as WorkBuddyWebStatus
+    /*
+     * A 200 does not promise a status document: the body may be empty, literal
+     * `null`, or a non-JSON page. Storing that unchecked would put a value in
+     * state that `resultFor` dereferences on the next render, so it is validated
+     * here with the same predicate the settings card uses. A rejection is left to
+     * the callers below, which already degrade quietly.
+     */
+    const value: unknown = await response.json().catch(() => undefined)
+    if (!isWorkBuddyWebStatus(value)) throw new Error(t('statusResponseInvalid'))
     if (mounted.current && !signal?.aborted) setStatus(value)
-  }, [card.statusPath])
+  }, [card.statusPath, t])
 
   useEffect(() => {
     mounted.current = true
@@ -293,6 +311,12 @@ function ModelProbe({ model, card, label, t }: {
   // Once a model has been detected it leaves the candidate list, so keep the
   // entry visible for it: that is the case the tooltip reports a result in.
   const visible = eligible || result !== undefined
+
+  // A recorded result answers the question a remembered failure was about, so
+  // the flag is dropped with it rather than lingering into the next render.
+  useEffect(() => {
+    if (result !== undefined) setFailed(false)
+  }, [result])
 
   // A selection change must not strand an open bubble.
   useEffect(() => { setConfirming(false); setNote(undefined) }, [model])

@@ -15,5 +15,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/client", "tests/probe-composer.spec.ts", "tests/plugin-card.spec.ts", "tests/client-variants.spec.ts", "tests/slot-registration.spec.ts"]
+  "include": ["src/client", "tests/probe-composer.spec.ts", "tests/plugin-card.spec.ts", "tests/client-variants.spec.ts", "tests/slot-registration.spec.ts", "tests/client-defects.spec.ts"]
 }

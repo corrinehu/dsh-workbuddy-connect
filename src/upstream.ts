@@ -1,13 +1,32 @@
 /**
  * WorkBuddy (CodeBuddy / copilot.tencent.com) upstream client: chat streaming,
- * token refresh, model catalog, and credit balance. The wire behavior is
- * ported from Sliverkiss/workbuddy2api (MIT), whose Go implementation is
- * battle-tested against the real endpoint.
+ * token refresh, model catalog, and credit balance.
+ *
+ * Two sources shape the wire behavior. Response handling and the request
+ * *shape* come from Sliverkiss/workbuddy2api (MIT), whose Go implementation is
+ * battle-tested against the real endpoint. The request *headers* — above all
+ * the client-identity tuple a credit ledger attributes a request by (使用端) —
+ * come from the installed official desktop client:
+ * `docs/workbuddy-client-wire-contract.md` is the byte-verified contract, and
+ * every value chosen below cites the block id it was read from. Where that
+ * contract marks a value unknown, the header is left out rather than guessed.
  *
  * @module dsh-workbuddy-connect/upstream
  */
 
-import { appUserAgent, resolveAppVersion, type AppVersionInfo } from './app-version.ts'
+import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import {
+  FALLBACK_APP_VERSION,
+  appUserAgent,
+  readBundleVersion,
+  resolveAppVersion,
+  validAppVersion,
+  type AppVersionInfo,
+} from './app-version.ts'
 import type { WorkBuddyCredential } from './auth.ts'
 import type { ProbeAttempt } from './probe.ts'
 import { PROBE_MAX_TOKENS, PROBE_PROMPT } from './probe.ts'
@@ -128,9 +147,191 @@ const CN_CHAT_BASE = 'https://copilot.tencent.com'
 const CN_BILLING_BASE = 'https://www.codebuddy.cn'
 const GLOBAL_BASE = 'https://www.workbuddy.ai'
 
-const CLIENT_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
+/**
+ * User-Agent for the **CN model catalog** endpoint only.
+ *
+ * Not the chat UA — the chat request carries the official client's own
+ * User-Agent (§3), never this literal. This endpoint
+ * (`/console/enterprises/personal/models`) is the plugin's own path, not one
+ * the official CLI uses (the string occurs 0 times in its bundle), and the
+ * gateway's User-Agent gate there is unmeasured. The value is therefore left
+ * exactly as the plugin has always sent it: changing the UA on the request
+ * that *decides which models are exposed* is a catalog change, not a
+ * wire-identity change.
+ */
+const CN_CATALOG_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
 const JSON_TIMEOUT_MS = 30_000
 const ERROR_BODY_LIMIT = 4096
+
+/* -------------------------------------------------------------------------- *
+ * Installed-client identity
+ *
+ * The official desktop client spawns its bundled agent CLI, which labels every
+ * model request with a fixed identity tuple (§2.2) and a composed User-Agent
+ * (§3). Those are the fields the credit ledger reads, so they must be derived
+ * from the client actually installed here rather than hardcoded — and where
+ * the contract marks a value unknown, the field is omitted.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * The platform/product token the desktop client injects (`WORKBUDDY_PLATFORM`,
+ * `CLIENT_INFO_PLATFORM` and `CLIENT_INFO_IDE_TYPE` in B15) and the banner
+ * endpoint repeats (B17). Byte-confirmed for the CN desktop; used for both
+ * regions because no region-specific spelling is established for the chat path
+ * — the contract leaves the region-dependent identity values unknown (§7).
+ */
+const CLIENT_PRODUCT = 'WorkBuddy'
+
+/**
+ * `X-Agent-Intent` when the session has no `codebuddy.ai/mode` meta (B1).
+ *
+ * The plugin's own request carries no session mode — the shim hands the
+ * upstream seam an OpenAI body and nothing else — so the official default is
+ * the only derivable value.
+ */
+const AGENT_INTENT_DEFAULT = 'craft'
+
+/** `X-Agent-Type` for a request that is neither a subagent nor a team member (B3, B27). */
+const AGENT_TYPE_MAIN = 'main'
+
+/** Deployment type the official client reports on CN (`deploymentType ?? "SaaS"`, B11). */
+const PRODUCT_SAAS = 'SaaS'
+
+/** `X-Auth-Refresh-Source` on the token-refresh call (B9, contract §4). */
+const REFRESH_SOURCE = 'plugin'
+
+/** `cli/package.json` inside the installed App bundle, relative to the bundle root. */
+const CLI_PACKAGE_PATH = ['Contents', 'Resources', 'app.asar.unpacked', 'cli', 'package.json'] as const
+
+/**
+ * Installed desktop-client versions the outbound identity is built from.
+ *
+ * `appVersion` is the desktop App version (B15's `CLIENT_INFO_PLATFORM_VERSION`
+ * = what B2 falls back to for `X-IDE-Version`); `cliVersion` is the bundled
+ * agent CLI's own version, the `CLI/<version>` token of the User-Agent (§3).
+ */
+export interface WorkBuddyClientIdentity {
+  /** Desktop App version; drives `X-IDE-Version` and both UA version tokens. */
+  appVersion: string
+  /** Bundled agent-CLI version; omitted from the UA when unresolvable (§3). */
+  cliVersion?: string
+}
+
+/** Whether a value is a version the App or CLI could legitimately report. */
+function validCliVersion(value: unknown): value is string {
+  // A version reaches a header, so it may not carry a space, CR or LF; the
+  // upstream's own scheme allows a prerelease suffix (`2.137.1-rc.1`).
+  return typeof value === 'string' && /^\d{1,6}(?:\.\d{1,6}){1,3}(?:-[0-9A-Za-z.]+)?$/u.test(value)
+}
+
+/** Clamp an identity to header-safe values, degrading to the shared fallback. */
+function normalizeIdentity(identity: WorkBuddyClientIdentity): WorkBuddyClientIdentity {
+  const appVersion = validAppVersion(identity.appVersion) ? identity.appVersion : FALLBACK_APP_VERSION
+  return validCliVersion(identity.cliVersion) ? { appVersion, cliVersion: identity.cliVersion } : { appVersion }
+}
+
+/**
+ * The official User-Agent (§3, block B8):
+ *
+ * ```
+ * <platform>/<platformVersion> <productName>/<productVersion> CLI/<cliVersion>
+ * ```
+ *
+ * With the desktop-spawned inputs of B15 this is
+ * `WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1`. The trailing `CLI/…` token is
+ * dropped when no CLI version resolves — the official rule, not a fallback of
+ * this plugin's own: `buildUserAgent` pushes the extension only when
+ * `CLIENT_INFO_USER_AGENT_EXTENSION` is present (§3).
+ */
+export function clientUserAgent(identity: WorkBuddyClientIdentity): string {
+  const parts = [`${CLIENT_PRODUCT}/${identity.appVersion}`, `${CLIENT_PRODUCT}/${identity.appVersion}`]
+  if (validCliVersion(identity.cliVersion)) parts.push(`CLI/${identity.cliVersion}`)
+  return parts.join(' ')
+}
+
+/** macOS App-bundle roots, searched in the same order `app-version.ts` uses. */
+function macAppRoots(): string[] {
+  return ['/Applications', join(homedir(), 'Applications')]
+}
+
+/**
+ * Cache file for the **CN** desktop App's version.
+ *
+ * Deliberately not `app-version.ts`'s `.workbuddy-ai-version.json`: that file
+ * belongs to the international catalog path, and letting a CN App write its
+ * version into it would relabel the international request's User-Agent — the
+ * same reason one catalog file per variant exists. The name follows that
+ * file's convention.
+ */
+function cnAppVersionPath(): string {
+  return join(resolveDshHome(), '.workbuddy-app-version.json')
+}
+
+/** Bundle name of the desktop client that issues a region's requests. */
+function desktopBundleName(region: WorkBuddyRegion): string {
+  return region === 'global' ? 'WorkBuddy AI.app' : 'WorkBuddy.app'
+}
+
+/**
+ * The installed desktop bundle for a region, or `undefined` when it is not
+ * installed (or not readable).
+ *
+ * This is the *location* only: the version is still resolved by
+ * `app-version.ts`'s `resolveAppVersion`, whose `installed` reader is its
+ * documented injection point, so the whole installed → saved → fallback chain
+ * (and its best-effort cache write) stays in one module. The default reader
+ * there is pinned to the international `WorkBuddy AI.app`, which is not the
+ * client that issues a CN chat request, and that is the one thing that has to
+ * be supplied from here.
+ *
+ * Windows and Linux report `undefined` for the same reason `app-version.ts`
+ * does: no verified bundle-metadata location exists there yet.
+ */
+async function installedDesktopBundle(region: WorkBuddyRegion): Promise<{ version: string; bundle: string } | undefined> {
+  if (process.platform !== 'darwin') return undefined
+  for (const root of macAppRoots()) {
+    const bundle = join(root, desktopBundleName(region))
+    const version = await readBundleVersion(join(bundle, 'Contents', 'Info.plist'))
+    if (version !== undefined) return { version, bundle }
+  }
+  return undefined
+}
+
+/**
+ * The bundled agent CLI's real version, or `undefined` when it does not resolve.
+ *
+ * `cli/package.json` ships a `0.0.0` placeholder in `version` and the real
+ * version in `publishConfig.customPackage.version` (contract §1); the official
+ * resolver prefers `version` but falls back to the custom package (§3.3).
+ * Unreadable or placeholder-only metadata yields `undefined`, which drops the
+ * `CLI/…` UA token instead of inventing a version (§3 degradation).
+ */
+async function readBundledCliVersion(bundle: string): Promise<string | undefined> {
+  let document: unknown
+  try {
+    document = JSON.parse(await readFile(join(bundle, ...CLI_PACKAGE_PATH), 'utf8'))
+  } catch {
+    return undefined
+  }
+  if (!isObject(document)) return undefined
+  const publishConfig = document['publishConfig']
+  const customPackage = isObject(publishConfig) ? publishConfig['customPackage'] : undefined
+  const customVersion = isObject(customPackage) ? customPackage['version'] : undefined
+  const declared = document['version']
+  const version = typeof declared === 'string' && declared !== '' && declared !== '0.0.0' ? declared : customVersion
+  return validCliVersion(version) ? version : undefined
+}
+
+/**
+ * A fresh request id: a UUID v4 with the dashes stripped.
+ *
+ * That is the exact shape the official client mints for `X-Request-ID`,
+ * `X-Conversation-Message-ID` (B26) and `X-Conversation-Request-ID` (§2.3, the
+ * session's request id re-minted for every run).
+ */
+function freshRequestId(): string {
+  return randomUUID().replaceAll('-', '')
+}
 
 /** Insufficient-credit markers, ASCII lowercase plus the original Chinese. */
 const HARD_CREDIT_MARKERS: readonly string[] = [
@@ -274,43 +475,88 @@ function originReferer(credential: WorkBuddyCredential): string {
   return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE
 }
 
-/** Headers every upstream request shares. */
-function commonHeaders(credential: WorkBuddyCredential): Record<string, string> {
-  return {
+/**
+ * Refresh-endpoint headers; `X-Refresh-Token` appears here and nowhere else.
+ *
+ * The official refresh call (B9) carries the refresh token, the refresh source
+ * and the same interceptor-provided headers every other request gets — no
+ * `Origin`, `Referer` or `X-Requested-With` (§2.4), which is why they are no
+ * longer sent here either.
+ */
+function refreshHeaders(credential: WorkBuddyCredential, identity: WorkBuddyClientIdentity): Record<string, string> {
+  const headers: Record<string, string> = {
     'Accept': 'application/json, text/plain, */*',
-    'X-Requested-With': 'XMLHttpRequest',
-    'Origin': originReferer(credential),
-    'Referer': `${originReferer(credential)}/`,
-    'User-Agent': CLIENT_UA,
-  }
-}
-
-/** Chat request headers, including the X-No-* conventions the official CLI uses. */
-function chatHeaders(credential: WorkBuddyCredential): Record<string, string> {
-  const headers: Record<string, string> = {
-    ...commonHeaders(credential),
-    'Content-Type': 'application/json',
-    // 安全红线：chat 请求绝不携带 refresh token。
-    ...credential.uid === '' ? { 'X-No-User-Id': '1' } : { 'X-User-Id': credential.uid },
-    ...credential.enterpriseId === undefined || credential.enterpriseId === ''
-      ? { 'X-No-Enterprise-Id': '1' }
-      : { 'X-Enterprise-Id': credential.enterpriseId },
-    ...credential.domain === '' ? { 'X-No-Department-Info': '1' } : { 'X-Domain': credential.domain },
-    'X-Product': 'SaaS',
-  }
-  return headers
-}
-
-/** Refresh-endpoint headers; X-Refresh-Token appears here and nowhere else. */
-function refreshHeaders(credential: WorkBuddyCredential): Record<string, string> {
-  const headers: Record<string, string> = {
-    ...commonHeaders(credential),
+    'User-Agent': clientUserAgent(identity),
     'X-Refresh-Token': credential.refreshToken,
-    'X-Auth-Refresh-Source': 'workbuddy',
+    // B9 / §4: the official refresh path sends `plugin`; the plugin used to
+    // send `workbuddy`, a value that appears nowhere in the official client.
+    'X-Auth-Refresh-Source': REFRESH_SOURCE,
   }
   if (credential.enterpriseId !== undefined && credential.enterpriseId !== '') {
     headers['X-Enterprise-Id'] = credential.enterpriseId
   }
+  return headers
+}
+
+/**
+ * Chat-request headers: the header set the official model request carries
+ * (§2.2), and none of the headers §2.4 establishes it does not.
+ *
+ * The request ids are minted per call. The official client derives them from a
+ * session it owns (`ew.id`, `session.conversationRequestId`), and the plugin
+ * has no session at this seam: `chatStream` receives an OpenAI body and a
+ * credential, nothing that marks a conversation boundary. Rather than fake a
+ * stable conversation, every request is its own single-turn session — the
+ * official minting rule when a session has no id yet (§2.3), applied per
+ * request.
+ *
+ * Deliberately absent, each for a reason read from the contract:
+ *
+ * - `X-No-User-Id` / `X-No-Enterprise-Id` / `X-No-Department-Info`: the
+ *   official chat path never sends them (§2.4). They are suppressor markers the
+ *   auth interceptor *reads* (B6); an absent id is expressed by omitting the
+ *   field, not by announcing the omission.
+ * - `X-Department-Info`: sent only when the account carries a
+ *   `departmentFullName` (B6), which the plugin's credential does not model.
+ * - `X-Requested-With`, `Origin`, `Referer`: the CLI is a Node process and adds
+ *   none of them (§2.4).
+ * - `X-Root-Request-ID`, `X-Parent-Conversation-ID`, `X-Agent-Purpose`,
+ *   `X-Stainless-*`: conditional on state the plugin does not have, or SDK
+ *   internals that are not client identity (§2.2 #20-23).
+ */
+function chatHeaders(credential: WorkBuddyCredential, identity: WorkBuddyClientIdentity): Record<string, string> {
+  // `X-Request-ID` and `X-Conversation-Message-ID` are the same value — both
+  // are the turn's `messageId` (B1, B26).
+  const messageId = freshRequestId()
+  const headers: Record<string, string> = {
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent': clientUserAgent(identity),
+    'X-Request-ID': messageId,
+    'X-Conversation-Message-ID': messageId,
+    'X-Conversation-ID': freshRequestId(),
+    'X-Conversation-Request-ID': freshRequestId(),
+    'X-Agent-Intent': AGENT_INTENT_DEFAULT,
+    'X-Agent-Type': AGENT_TYPE_MAIN,
+    // The client-identity tuple the server whitelists a client by (§2.5); its
+    // three `X-IDE-*` values come from the installed bundle, never hardcoded.
+    'X-IDE-Type': CLIENT_PRODUCT,
+    'X-IDE-Name': CLIENT_PRODUCT,
+    'X-IDE-Version': identity.appVersion,
+    'X-Product': PRODUCT_SAAS,
+  }
+  // 安全红线：chat 请求绝不携带 refresh token。
+  if (credential.uid !== '') headers['X-User-Id'] = credential.uid
+  // B6 injects the enterprise headers from the same field; a personal account
+  // has neither, and then neither header is sent.
+  if (credential.enterpriseId !== undefined && credential.enterpriseId !== '') {
+    headers['X-Enterprise-Id'] = credential.enterpriseId
+    headers['X-Tenant-Id'] = credential.enterpriseId
+  }
+  // `credential.domain` *is* the auth session's `domain` — `src/auth.ts` reads
+  // it straight out of the desktop auth document's `auth.domain`, which is the
+  // exact field B6 gates `X-Domain` on. An empty domain omits the header.
+  if (credential.domain !== '') headers['X-Domain'] = credential.domain
   return headers
 }
 
@@ -463,8 +709,26 @@ export interface WorkBuddyCatalogFetch {
 
 /** Constructor dependencies. */
 export interface WorkBuddyUpstreamClientOptions {
-  /** App-version resolver for international catalog requests; injectable for tests. */
-  resolveAppVersion?: () => Promise<AppVersionInfo>
+  /**
+   * App-version resolver for international catalog requests; injectable for
+   * tests.
+   *
+   * It is also the app-version half of the outbound client identity: the
+   * default reader resolves the bundle of the *requesting* region, so a CN
+   * chat request is labelled with the CN App's version instead of the
+   * international App's.
+   */
+  resolveAppVersion?: (region: WorkBuddyRegion) => Promise<AppVersionInfo>
+  /**
+   * Outbound client identity (desktop App version + bundled CLI version);
+   * injectable so tests never read the real App bundle.
+   *
+   * When supplied it wins over the installed-bundle reader for every header
+   * that carries identity — the chat `User-Agent` and `X-IDE-Version` — and it
+   * is validated the same way (`validAppVersion` / the CLI version shape), so a
+   * test can pin the exact outbound request without owning a WorkBuddy install.
+   */
+  resolveClientIdentity?: (region: WorkBuddyRegion) => Promise<WorkBuddyClientIdentity>
 }
 
 /**
@@ -477,19 +741,92 @@ export interface WorkBuddyUpstreamClientOptions {
  */
 export class WorkBuddyUpstreamClient {
   /**
-   * Resolves the App-shaped UA version for international catalog requests.
-   * Injectable so tests never read the real filesystem.
+   * Resolves the App-shaped UA version for international catalog requests, and
+   * the app-version half of the outbound client identity. Injectable so tests
+   * never read the real filesystem.
    */
-  private readonly resolveAppVersion: () => Promise<AppVersionInfo>
+  private readonly resolveAppVersion: (region: WorkBuddyRegion) => Promise<AppVersionInfo>
+
+  /** Injected identity resolver; wins over the installed-bundle reader. */
+  private readonly resolveClientIdentity: ((region: WorkBuddyRegion) => Promise<WorkBuddyClientIdentity>) | undefined
+
+  /**
+   * Identity per region, resolved once per client.
+   *
+   * The official client reads its client info once per process, and the
+   * resolution reads the App bundle and may write the version cache, so it must
+   * not run per message.
+   */
+  private readonly identities = new Map<WorkBuddyRegion, Promise<WorkBuddyClientIdentity>>()
 
   /** Provenance of the most recent successful catalog fetch, for the card. */
   lastCatalog: WorkBuddyCatalogFetch | undefined
 
   constructor(options: WorkBuddyUpstreamClientOptions = {}) {
-    this.resolveAppVersion = options.resolveAppVersion ?? (() => resolveAppVersion())
+    this.resolveAppVersion = options.resolveAppVersion
+      ?? (region => resolveAppVersion({
+        installed: () => installedDesktopBundle(region),
+        // Each region caches its own App version, so adopting the CN App's
+        // version here cannot relabel the international catalog's UA.
+        ...region === 'global' ? {} : { path: cnAppVersionPath() },
+      }))
+    this.resolveClientIdentity = options.resolveClientIdentity
   }
 
-  /** POST the chat endpoint; a successful answer is the raw SSE response. */
+  /**
+   * The identity this client presents for one region's requests.
+   *
+   * Never fatal and never blocking: a bundle that cannot be read, a version
+   * that cannot be parsed, or a failing injected resolver all degrade to
+   * {@link FALLBACK_APP_VERSION} — the same last resort `app-version.ts` uses —
+   * and to a User-Agent without the trailing `CLI/…` token, which is the
+   * official degradation when the CLI version is absent (§3).
+   */
+  private clientIdentity(region: WorkBuddyRegion): Promise<WorkBuddyClientIdentity> {
+    const cached = this.identities.get(region)
+    if (cached !== undefined) return cached
+    // The last-resort `catch` keeps the cached promise from ever rejecting: a
+    // rejected promise cached here would fail every later request too.
+    const resolved = this.resolveIdentity(region).catch((): WorkBuddyClientIdentity => ({ appVersion: FALLBACK_APP_VERSION }))
+    this.identities.set(region, resolved)
+    return resolved
+  }
+
+  /** Resolve one region's identity: injected first, then the installed bundle. */
+  private async resolveIdentity(region: WorkBuddyRegion): Promise<WorkBuddyClientIdentity> {
+    const injected = this.resolveClientIdentity
+    if (injected !== undefined) {
+      try {
+        return normalizeIdentity(await injected(region))
+      } catch {
+        // A failing injected resolver must not block a request; fall through to
+        // the installed bundle below.
+      }
+    }
+    let appVersion: string
+    try {
+      const resolved = await this.resolveAppVersion(region)
+      appVersion = validAppVersion(resolved.version) ? resolved.version : FALLBACK_APP_VERSION
+    } catch {
+      appVersion = FALLBACK_APP_VERSION
+    }
+    const bundle = await installedDesktopBundle(region)
+    const cliVersion = bundle === undefined ? undefined : await readBundledCliVersion(bundle.bundle)
+    return cliVersion === undefined ? { appVersion } : { appVersion, cliVersion }
+  }
+
+  /**
+   * POST the chat endpoint; a successful answer is the raw SSE response.
+   *
+   * The body is normalized for both regions. The international endpoint needs a
+   * leading `system` message (400/11128) and gets one from
+   * {@link prepareInternationalChatBody}; the CN endpoint has no such rule, but
+   * it does reject the `developer` role container, so the CN body goes through
+   * {@link prepareChatBody} — the same rewrite the shim already applies, and
+   * idempotent. No artificial CN system prompt is invented: the official
+   * builder prepends one only when the agent has instructions (B10), so a body
+   * without one is not a violation of anything the contract establishes (§5).
+   */
   async chatStream(
     credential: WorkBuddyCredential,
     bodyJson: string,
@@ -497,10 +834,12 @@ export class WorkBuddyUpstreamClient {
   ): Promise<WorkBuddyChatResult> {
     let response: Response
     try {
+      const region = regionOf(credential.domain)
+      const identity = await this.clientIdentity(region)
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
-        body: regionOf(credential.domain) === 'global' ? prepareInternationalChatBody(bodyJson) : bodyJson,
+        headers: { ...chatHeaders(credential, identity), 'Authorization': `Bearer ${credential.accessToken}` },
+        body: region === 'global' ? prepareInternationalChatBody(bodyJson) : prepareChatBody(bodyJson),
         ...signal === undefined ? {} : { signal },
       })
     } catch (error: unknown) {
@@ -518,9 +857,10 @@ export class WorkBuddyUpstreamClient {
 
   /** POST the token-refresh endpoint; the caller merges the outcome. */
   async refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome> {
+    const identity = await this.clientIdentity(regionOf(credential.domain))
     const response = await fetch(`${chatBase(credential)}/v2/plugin/auth/token/refresh`, {
       method: 'POST',
-      headers: refreshHeaders(credential),
+      headers: refreshHeaders(credential, identity),
       signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
     })
     const envelope = await readEnvelope(response)
@@ -558,7 +898,7 @@ export class WorkBuddyUpstreamClient {
     // `this.resolveAppVersion`, not the module-level function: the constructor
     // injects a resolver so tests never read the real filesystem, and calling
     // the module function directly made that seam inert.
-    const appVersion = international ? await this.resolveAppVersion() : undefined
+    const appVersion = international ? await this.resolveAppVersion('global') : undefined
     const response = await fetch(`${chatBase(credential)}${international ? '/v3/config' : '/console/enterprises/personal/models'}`, {
       headers: {
         Authorization: `Bearer ${credential.accessToken}`,
@@ -566,7 +906,7 @@ export class WorkBuddyUpstreamClient {
         Origin: originReferer(credential),
         Referer: `${originReferer(credential)}/`,
         ...international ? { 'X-Requested-With': 'XMLHttpRequest', 'X-Product': 'SaaS' } : {},
-        'User-Agent': appVersion === undefined ? CLIENT_UA : appUserAgent(appVersion.version),
+        'User-Agent': appVersion === undefined ? CN_CATALOG_UA : appUserAgent(appVersion.version),
       },
       signal: signal === undefined
         ? AbortSignal.timeout(JSON_TIMEOUT_MS)
@@ -686,6 +1026,7 @@ export class WorkBuddyUpstreamClient {
     signal: AbortSignal,
   ): Promise<ProbeAttempt> {
     const international = regionOf(credential.domain) === 'global'
+    const identity = await this.clientIdentity(international ? 'global' : 'cn')
     const payload: Record<string, unknown> = {
       model,
       stream: true,
@@ -701,7 +1042,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, identity), 'Authorization': `Bearer ${credential.accessToken}` },
         body: JSON.stringify(payload),
         signal,
       })

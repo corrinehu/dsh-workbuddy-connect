@@ -235,6 +235,19 @@ type WorkBuddyChatResult = {
   message: string;
 };
 /**
+ * Installed desktop-client versions the outbound identity is built from.
+ *
+ * `appVersion` is the desktop App version (B15's `CLIENT_INFO_PLATFORM_VERSION`
+ * = what B2 falls back to for `X-IDE-Version`); `cliVersion` is the bundled
+ * agent CLI's own version, the `CLI/<version>` token of the User-Agent (§3).
+ */
+interface WorkBuddyClientIdentity {
+  /** Desktop App version; drives `X-IDE-Version` and both UA version tokens. */
+  appVersion: string;
+  /** Bundled agent-CLI version; omitted from the UA when unresolvable (§3). */
+  cliVersion?: string;
+}
+/**
  * Reduce an upstream credits string to its language-neutral display form.
  *
  * The host LLM seam carries this text to the browser, and the host has no
@@ -276,8 +289,26 @@ interface WorkBuddyCatalogFetch {
 }
 /** Constructor dependencies. */
 interface WorkBuddyUpstreamClientOptions {
-  /** App-version resolver for international catalog requests; injectable for tests. */
-  resolveAppVersion?: () => Promise<AppVersionInfo>;
+  /**
+   * App-version resolver for international catalog requests; injectable for
+   * tests.
+   *
+   * It is also the app-version half of the outbound client identity: the
+   * default reader resolves the bundle of the *requesting* region, so a CN
+   * chat request is labelled with the CN App's version instead of the
+   * international App's.
+   */
+  resolveAppVersion?: (region: WorkBuddyRegion) => Promise<AppVersionInfo>;
+  /**
+   * Outbound client identity (desktop App version + bundled CLI version);
+   * injectable so tests never read the real App bundle.
+   *
+   * When supplied it wins over the installed-bundle reader for every header
+   * that carries identity — the chat `User-Agent` and `X-IDE-Version` — and it
+   * is validated the same way (`validAppVersion` / the CLI version shape), so a
+   * test can pin the exact outbound request without owning a WorkBuddy install.
+   */
+  resolveClientIdentity?: (region: WorkBuddyRegion) => Promise<WorkBuddyClientIdentity>;
 }
 /**
  * Upstream HTTP client. One instance serves the whole plugin; requests take
@@ -289,14 +320,48 @@ interface WorkBuddyUpstreamClientOptions {
  */
 declare class WorkBuddyUpstreamClient {
   /**
-   * Resolves the App-shaped UA version for international catalog requests.
-   * Injectable so tests never read the real filesystem.
+   * Resolves the App-shaped UA version for international catalog requests, and
+   * the app-version half of the outbound client identity. Injectable so tests
+   * never read the real filesystem.
    */
   private readonly resolveAppVersion;
+  /** Injected identity resolver; wins over the installed-bundle reader. */
+  private readonly resolveClientIdentity;
+  /**
+   * Identity per region, resolved once per client.
+   *
+   * The official client reads its client info once per process, and the
+   * resolution reads the App bundle and may write the version cache, so it must
+   * not run per message.
+   */
+  private readonly identities;
   /** Provenance of the most recent successful catalog fetch, for the card. */
   lastCatalog: WorkBuddyCatalogFetch | undefined;
   constructor(options?: WorkBuddyUpstreamClientOptions);
-  /** POST the chat endpoint; a successful answer is the raw SSE response. */
+  /**
+   * The identity this client presents for one region's requests.
+   *
+   * Never fatal and never blocking: a bundle that cannot be read, a version
+   * that cannot be parsed, or a failing injected resolver all degrade to
+   * {@link FALLBACK_APP_VERSION} — the same last resort `app-version.ts` uses —
+   * and to a User-Agent without the trailing `CLI/…` token, which is the
+   * official degradation when the CLI version is absent (§3).
+   */
+  private clientIdentity;
+  /** Resolve one region's identity: injected first, then the installed bundle. */
+  private resolveIdentity;
+  /**
+   * POST the chat endpoint; a successful answer is the raw SSE response.
+   *
+   * The body is normalized for both regions. The international endpoint needs a
+   * leading `system` message (400/11128) and gets one from
+   * {@link prepareInternationalChatBody}; the CN endpoint has no such rule, but
+   * it does reject the `developer` role container, so the CN body goes through
+   * {@link prepareChatBody} — the same rewrite the shim already applies, and
+   * idempotent. No artificial CN system prompt is invented: the official
+   * builder prepends one only when the agent has instructions (B10), so a body
+   * without one is not a violation of anything the contract establishes (§5).
+   */
   chatStream(credential: WorkBuddyCredential, bodyJson: string, signal?: AbortSignal): Promise<WorkBuddyChatResult>;
   /** POST the token-refresh endpoint; the caller merges the outcome. */
   refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome>;

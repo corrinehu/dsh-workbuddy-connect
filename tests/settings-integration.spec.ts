@@ -46,6 +46,19 @@ describe('WorkBuddy Host settings integration', () => {
   it('exposes the provider directory entry, the settings section, and the fallback model list', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-settings-'))
     vi.stubEnv('DSH_HOME', root)
+    // This case asserts the CN fallback roster, which is served only to a
+    // signed-in variant. Pinning a credential of its own keeps that independent
+    // of whether this machine happens to have the WorkBuddy desktop app signed
+    // in: without it the store probes the ambient desktop file and the group
+    // stays hidden (empty model list) on a clean machine and on CI.
+    const cnFile = join(root, 'cn.info')
+    await writeFile(cnFile, credentialDocument('copilot.tencent.com'))
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', cnFile)
+    // Signing in would otherwise make this case perform a real request to the CN
+    // catalog endpoint. These tests must not touch the network, and the roster
+    // asserted below is the compiled-in fallback, so the fetch is stubbed to
+    // fail exactly as the sibling case does rather than depending on the remote.
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
