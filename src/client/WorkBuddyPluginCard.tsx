@@ -682,14 +682,22 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
         // document removes for reads, and identical here. Aborts stay silent.
         setReadFailure(error instanceof Error ? error.message : t('requestFailed'))
       }
+      // The failed write has no follow-up read, so it unregisters here.
+      manualControllers.current.delete(controller)
       return
     } finally {
-      manualControllers.current.delete(controller)
       if (mounted.current) setBusy(false)
     }
     // Started after the write resolves, so this read outranks any poll that
     // began earlier and the refreshed list is what stays on screen.
-    await refresh(controller.signal)
+    try {
+      await refresh(controller.signal)
+    } finally {
+      // Unregistered only after this read settles: while it is in flight it is
+      // still a manual request, so unmount must abort it exactly as it aborts
+      // the write above and `manualRefresh`/`control` abort theirs.
+      manualControllers.current.delete(controller)
+    }
   }, [refresh, status, t, trackController, variant.probePath])
 
   /**

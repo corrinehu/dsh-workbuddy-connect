@@ -461,6 +461,45 @@ describe('WorkBuddyPluginCard', () => {
       expect(rendered()).not.toContain(en.requestFailed)
     })
   })
+
+  describe('#11 a failed write reports beside the document (review §11)', () => {
+    it('keeps the account and credits on screen when the write is rejected, and clears the notice after a good read', async () => {
+      // The write paths (`refreshModels`, `control`) apply the same policy as a
+      // failed read: the reason is attached beside the document, never in place
+      // of it. A rejected "Refresh model list" must not take the account and
+      // credit figures away over one failed action, and abort cannot reach here.
+      statusReply = {
+        ok: true,
+        body: signedInStatus({
+          nickname: 'nick',
+          credits: { total: 15, accounts: [] },
+          catalog: { source: 'live', fetchedAt: Date.UTC(2026, 8, 12, 8, 30) },
+        }),
+      }
+      await mount()
+      expect(rendered()).toContain('nick')
+      expect(rendered()).toContain(t('creditsTotal', { total: formatNumber(15) }))
+
+      writeReply = { ok: false, status: 500, body: {} }
+      await press(en.refreshModels)
+
+      const failed = rendered()
+      expect(failed).toContain(NOTICE)
+      expect(failed).toContain('HTTP 500')
+      // The document survives the rejected write, and the label still describes
+      // the account rather than the failed action.
+      expect(failed).toContain('nick')
+      expect(failed).toContain(t('creditsTotal', { total: formatNumber(15) }))
+      expect(failed).not.toContain(en.requestFailed)
+
+      // A successful read clears it, exactly as it clears a read failure.
+      statusReply = { ok: true, body: signedInStatus({ nickname: 'back' }) }
+      await tickIntervals()
+
+      expect(rendered()).toContain('back')
+      expect(rendered()).not.toContain(NOTICE)
+    })
+  })
 })
 
 /* -------------------------------------------------------------------------- *
@@ -609,6 +648,87 @@ describe('WorkBuddyProbeControl', () => {
     }
     await fireFocus()
     expect(controlButton().props['aria-label']).toBe(t('probeTooltipIdle', { model: 'glm-5.2' }))
+  })
+
+  describe('#7.1 tooltip precedence order', () => {
+    /** A signed-in document whose probe section carries `results` for the selected model. */
+    const withResults = (results: unknown[]): { ok: true, body: unknown } => ({
+      ok: true,
+      body: signedInStatus({
+        probe: { consent: true, running: false, candidates: ['glm-5.2'], results },
+      }),
+    })
+
+    const recorded = (validation: string, efforts: string[]): Record<string, unknown> => ({
+      id: 'glm-5.2', name: 'GLM-5.2', validation, efforts, probedAt: Date.now(),
+    })
+
+    /** The two clicks that start a detection: the control, then the bubble's Confirm. */
+    async function detect(): Promise<void> {
+      await act(async () => { controlButton().props.onClick() })
+      const confirm = view!.root.findAllByType('button')
+        .find(node => node.children.join('') === en.probeConfirmAction)!
+      await act(async () => { confirm.props.onClick() })
+    }
+
+    it('ranks busy above a recorded result, and the result above a stale failure', async () => {
+      // §7.1 (normative order): `busy` → recorded `result` → `failed` → idle.
+      // The reachable state the order decides: a result is ALREADY on screen
+      // when a fresh detection of the same model fails. No read intervenes, so
+      // `result` never changes identity, the clearing effect never runs, and
+      // `failed && result !== undefined` holds — nothing but the branch order
+      // can keep the levels on screen.
+      statusReply = withResults([recorded('validating', ['low', 'high'])])
+      await mount()
+
+      const verified = t('probeTooltipVerified', { levels: 'low / high' })
+      // Rung 2: a recorded result is described, not the idle copy.
+      expect(controlButton().props['aria-label']).toBe(verified)
+      expect(controlButton().props['aria-label']).not.toBe(t('probeTooltipIdle', { model: 'glm-5.2' }))
+
+      // Hold the POST open so the busy rung is observable with a result present:
+      // §7.1 puts `busy` above the recorded result, so the running copy wins.
+      plan = (_url, init) => (init?.method === 'POST' ? { hang: true } : statusReply)
+      await detect()
+      expect(controlButton().props['aria-label']).toBe(t('probeRunning', { model: 'glm-5.2' }))
+      expect(controlButton().props['aria-label']).not.toBe(verified)
+
+      // The run fails. Before §7.1 the failure copy was returned first and the
+      // levels the user had already paid for disappeared behind
+      // "Detection did not complete · click to retry".
+      await release(1, { ok: false, status: 500, body: { error: 'probe failed' } })
+
+      expect(controlButton().props['aria-label']).toBe(verified)
+      expect(controlButton().props['aria-label']).not.toBe(en.probeTooltipRetry)
+    })
+
+    it('ranks a non-validating result above the remembered failure too', async () => {
+      // The result rung outranks `failed` as a whole, not only its verified
+      // sub-branch: swapping those two branches must fail here as well.
+      statusReply = withResults([recorded('non-validating', [])])
+      writeReply = { ok: false, status: 500, body: { error: 'probe failed' } }
+      await mount()
+      expect(controlButton().props['aria-label']).toBe(en.probeTooltipNotValidating)
+
+      await detect()
+
+      expect(controlButton().props['aria-label']).toBe(en.probeTooltipNotValidating)
+      expect(controlButton().props['aria-label']).not.toBe(en.probeTooltipRetry)
+    })
+
+    it('keeps the failure copy for a failure with no result, and the idle copy for neither', async () => {
+      // Rungs 3 and 4: the failure copy is what remains when there is no result
+      // to report (§7.1.4), and idle is what remains when nothing happened.
+      statusReply = withResults([])
+      await mount()
+      expect(controlButton().props['aria-label']).toBe(t('probeTooltipIdle', { model: 'glm-5.2' }))
+
+      writeReply = { ok: false, status: 500, body: { error: 'probe failed' } }
+      await detect()
+
+      expect(controlButton().props['aria-label']).toBe(en.probeTooltipRetry)
+      expect(controlButton().props['aria-label']).not.toBe(t('probeTooltipIdle', { model: 'glm-5.2' }))
+    })
   })
 })
 
