@@ -27,40 +27,47 @@ function tempStore(now?: () => number): { store: WorkBuddyProbeStore; path: stri
   return { store: new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9', ...now === undefined ? {} : { now } }), path, dir }
 }
 
-/** The fallback catalog's old-form row, which declares no effort set. */
-const AUTO = FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'auto') as WorkBuddyModelInfo
+/**
+ * The fallback catalog's old-form row, which declares no effort set.
+ *
+ * Was `auto` until the roster moved to the product document's `cli` list, which
+ * no longer offers it — `glm-5.3` is the same shape (reasoning, but no declared
+ * effort set and no "thinking off"), so the cases below keep testing what they
+ * meant to.
+ */
+const UNDECLARED = FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5.3') as WorkBuddyModelInfo
 /** The fallback catalog's new-form row, which declares one. */
-const GLM53 = FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5.3') as WorkBuddyModelInfo
+const DECLARED = FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5.3-flash') as WorkBuddyModelInfo
 
 /** The account these observations are attributed to. */
 const ACCOUNT = 'uid-1:ent-1'
 
 describe('fingerprintModel', () => {
   it('is stable for the same row and changes when the reasoning object changes', () => {
-    const before = fingerprintModel(AUTO)
-    expect(fingerprintModel(AUTO)).toBe(before)
+    const before = fingerprintModel(UNDECLARED)
+    expect(fingerprintModel(UNDECLARED)).toBe(before)
 
     const changed: WorkBuddyModelInfo = {
-      ...AUTO,
-      reasoning: { ...AUTO.reasoning!, defaultEffort: 'low' },
+      ...UNDECLARED,
+      reasoning: { ...UNDECLARED.reasoning!, defaultEffort: 'low' },
     }
     expect(fingerprintModel(changed)).not.toBe(before)
   })
 
   it('ignores display-only fields so a rename does not discard an observation', () => {
-    const renamed: WorkBuddyModelInfo = { ...AUTO, name: 'Auto (renamed)' }
-    expect(fingerprintModel(renamed)).toBe(fingerprintModel(AUTO))
+    const renamed: WorkBuddyModelInfo = { ...UNDECLARED, name: 'GLM-5.3 (renamed)' }
+    expect(fingerprintModel(renamed)).toBe(fingerprintModel(UNDECLARED))
   })
 })
 
 describe('WorkBuddyProbeStore', () => {
   it('round-trips a record through disk', () => {
     const { store, path } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'validating', ['low', 'high'], ACCOUNT))
+    const fingerprint = fingerprintModel(UNDECLARED)
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['low', 'high'], ACCOUNT))
 
     const reopened = new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9' })
-    const record = reopened.get('auto', fingerprint, ACCOUNT)
+    const record = reopened.get('glm-5.3', fingerprint, ACCOUNT)
     expect(record?.validation).toBe('validating')
     expect(record?.efforts).toEqual(['low', 'high'])
     expect(record?.pluginVersion).toBe('9.9.9')
@@ -68,51 +75,51 @@ describe('WorkBuddyProbeStore', () => {
 
   it('refuses a record whose fingerprint no longer matches', () => {
     const { store } = tempStore()
-    store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low'], ACCOUNT))
-    expect(store.get('auto', fingerprintModel(AUTO), ACCOUNT)).toBeDefined()
-    expect(store.get('auto', 'a-different-fingerprint', ACCOUNT)).toBeUndefined()
+    store.set('glm-5.3', store.record(fingerprintModel(UNDECLARED), 'validating', ['low'], ACCOUNT))
+    expect(store.get('glm-5.3', fingerprintModel(UNDECLARED), ACCOUNT)).toBeDefined()
+    expect(store.get('glm-5.3', 'a-different-fingerprint', ACCOUNT)).toBeUndefined()
   })
 
   it('expires a record past the TTL', () => {
     let now = 1_000_000
     const { store } = tempStore(() => now)
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
-    expect(store.get('auto', fingerprint, ACCOUNT)).toBeDefined()
+    const fingerprint = fingerprintModel(UNDECLARED)
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+    expect(store.get('glm-5.3', fingerprint, ACCOUNT)).toBeDefined()
 
     now += 15 * 24 * 60 * 60 * 1000
-    expect(store.get('auto', fingerprint, ACCOUNT)).toBeUndefined()
+    expect(store.get('glm-5.3', fingerprint, ACCOUNT)).toBeUndefined()
   })
 
   it('never stores efforts for a non-validating observation', () => {
     const { store } = tempStore()
-    const record = store.record(fingerprintModel(AUTO), 'non-validating', ['low', 'high'], ACCOUNT)
+    const record = store.record(fingerprintModel(UNDECLARED), 'non-validating', ['low', 'high'], ACCOUNT)
     expect(record.efforts).toEqual([])
   })
 
   it('does not let an unknown result erase a decisive one', () => {
     const { store } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
-    store.set('auto', store.record(fingerprint, 'unknown', [], ACCOUNT))
+    const fingerprint = fingerprintModel(UNDECLARED)
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+    store.set('glm-5.3', store.record(fingerprint, 'unknown', [], ACCOUNT))
 
-    const kept = store.get('auto', fingerprint, ACCOUNT)
+    const kept = store.get('glm-5.3', fingerprint, ACCOUNT)
     expect(kept?.validation).toBe('validating')
     expect(kept?.efforts).toEqual(['low'])
   })
 
   it('does let a decisive result replace a previous unknown', () => {
     const { store } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'unknown', [], ACCOUNT))
-    store.set('auto', store.record(fingerprint, 'validating', ['high'], ACCOUNT))
-    expect(store.get('auto', fingerprint, ACCOUNT)?.efforts).toEqual(['high'])
+    const fingerprint = fingerprintModel(UNDECLARED)
+    store.set('glm-5.3', store.record(fingerprint, 'unknown', [], ACCOUNT))
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['high'], ACCOUNT))
+    expect(store.get('glm-5.3', fingerprint, ACCOUNT)?.efforts).toEqual(['high'])
   })
 
   it('reads a corrupt or foreign-version file as empty rather than throwing', () => {
     const { store, path } = tempStore()
-    store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low'], ACCOUNT))
-    expect(store.all()[ACCOUNT]).toHaveProperty('auto')
+    store.set('glm-5.3', store.record(fingerprintModel(UNDECLARED), 'validating', ['low'], ACCOUNT))
+    expect(store.all()[ACCOUNT]).toHaveProperty('glm-5.3')
 
     // A format version this reader does not know must not be half-understood.
     const document = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
@@ -131,8 +138,8 @@ describe('WorkBuddyProbeStore', () => {
     writeFileSync(path, JSON.stringify({
       version: 1,
       records: {
-        auto: {
-          fingerprint: fingerprintModel(AUTO),
+        'glm-5.3': {
+          fingerprint: fingerprintModel(UNDECLARED),
           validation: 'validating',
           efforts: ['low'],
           probedAtMs: Date.now(),
@@ -142,38 +149,38 @@ describe('WorkBuddyProbeStore', () => {
       },
     }))
     const reopened = new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9' })
-    expect(reopened.get('auto', fingerprintModel(AUTO), ACCOUNT)).toBeUndefined()
+    expect(reopened.get('glm-5.3', fingerprintModel(UNDECLARED), ACCOUNT)).toBeUndefined()
     expect(reopened.all()).toEqual({})
   })
 
   it('keeps each account\'s record isolated and recovers it after a switch back', () => {
     const { store, path } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
+    const fingerprint = fingerprintModel(UNDECLARED)
     const OTHER = 'uid-2:'
-    store.set('auto', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
 
     // The other account sees nothing of this one's...
-    expect(store.get('auto', fingerprint, OTHER)).toBeUndefined()
+    expect(store.get('glm-5.3', fingerprint, OTHER)).toBeUndefined()
     // ...and its own write does not clobber what this account recorded.
-    store.set('auto', store.record(fingerprint, 'validating', ['max'], OTHER))
-    expect(store.get('auto', fingerprint, ACCOUNT)?.efforts).toEqual(['low'])
-    expect(store.get('auto', fingerprint, OTHER)?.efforts).toEqual(['max'])
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['max'], OTHER))
+    expect(store.get('glm-5.3', fingerprint, ACCOUNT)?.efforts).toEqual(['low'])
+    expect(store.get('glm-5.3', fingerprint, OTHER)?.efforts).toEqual(['max'])
 
     // A→B→A through a reopen, as a restart would see it.
     const reopened = new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9' })
-    expect(reopened.get('auto', fingerprint, OTHER)?.efforts).toEqual(['max'])
-    expect(reopened.get('auto', fingerprint, ACCOUNT)?.efforts).toEqual(['low'])
+    expect(reopened.get('glm-5.3', fingerprint, OTHER)?.efforts).toEqual(['max'])
+    expect(reopened.get('glm-5.3', fingerprint, ACCOUNT)?.efforts).toEqual(['low'])
   })
 
   it('clears every record of every account on request', () => {
     const { store } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
-    store.set('auto', store.record(fingerprint, 'validating', ['max'], 'uid-2:'))
+    const fingerprint = fingerprintModel(UNDECLARED)
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+    store.set('glm-5.3', store.record(fingerprint, 'validating', ['max'], 'uid-2:'))
     store.clear()
     expect(store.all()).toEqual({})
-    expect(store.get('auto', fingerprint, ACCOUNT)).toBeUndefined()
-    expect(store.get('auto', fingerprint, 'uid-2:')).toBeUndefined()
+    expect(store.get('glm-5.3', fingerprint, ACCOUNT)).toBeUndefined()
+    expect(store.get('glm-5.3', fingerprint, 'uid-2:')).toBeUndefined()
   })
 })
 
@@ -183,7 +190,7 @@ describe('WorkBuddyProbeService precedence', () => {
     const { store } = tempStore()
     const catalog = new WorkBuddyCatalog()
     if (options.stored === true) {
-      store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low', 'high'], ACCOUNT))
+      store.set('glm-5.3', store.record(fingerprintModel(UNDECLARED), 'validating', ['low', 'high'], ACCOUNT))
     }
     return new WorkBuddyProbeService({
       store,
@@ -198,17 +205,17 @@ describe('WorkBuddyProbeService precedence', () => {
   it('never answers from an observation when the upstream declares a set', () => {
     const probe = service({ consent: true, stored: true })
     // `glm-5.3` declares supportedEfforts, so it is declared-set-only.
-    expect(probe.recordFor(GLM53.id)).toBeUndefined()
+    expect(probe.recordFor(DECLARED.id)).toBeUndefined()
   })
 
   it('returns the stored observation for an undeclared model', () => {
     const probe = service({ consent: true, stored: true })
-    expect(probe.recordFor(AUTO.id)?.efforts).toEqual(['low', 'high'])
+    expect(probe.recordFor(UNDECLARED.id)?.efforts).toEqual(['low', 'high'])
   })
 
   it('refuses to probe without consent', async () => {
     const probe = service({ consent: false })
-    const status = await probe.probe('auto')
+    const status = await probe.probe('glm-5.3')
     expect(status.state).toBe('unavailable')
     expect(status.state === 'unavailable' && status.reason).toContain('not authorized')
   })
@@ -254,20 +261,20 @@ describe('recordFor: the single judgement the card and adapter share', () => {
     const { store } = tempStore()
     const service = serviceFor(store)
     // Recorded against a fingerprint that no longer describes the row.
-    store.set('auto', store.record('stale-fingerprint', 'validating', ['low'], ACCOUNT))
-    expect(service.recordFor('auto')).toBeUndefined()
+    store.set('glm-5.3', store.record('stale-fingerprint', 'validating', ['low'], ACCOUNT))
+    expect(service.recordFor('glm-5.3')).toBeUndefined()
   })
 
   it('refuses an expired record even though the store still holds it', () => {
     let now = 1_000_000
     const { store } = tempStore(() => now)
     const service = serviceFor(store)
-    store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low'], ACCOUNT))
-    expect(service.recordFor('auto')?.efforts).toEqual(['low'])
+    store.set('glm-5.3', store.record(fingerprintModel(UNDECLARED), 'validating', ['low'], ACCOUNT))
+    expect(service.recordFor('glm-5.3')?.efforts).toEqual(['low'])
 
     now += 15 * 24 * 60 * 60 * 1000
     // Past the TTL the card must stop reporting it, exactly as the adapter does.
-    expect(service.recordFor('auto')).toBeUndefined()
+    expect(service.recordFor('glm-5.3')).toBeUndefined()
   })
 
   it('refuses a record for a model the catalog no longer lists', () => {

@@ -177,12 +177,14 @@ describe('WorkBuddy Host settings integration', () => {
     expect(volatileFields()).toEqual(['authFile', 'authFileAI', 'probeConsent', 'useMaximumContextWindow'])
 
     const models = await ctx.llm.listModels('workbuddy')
-    expect(models.map(model => model.id)).toContain('auto')
+    expect(models.map(model => model.id)).toContain('glm-5.3-flashx')
     expect(models.map(model => model.id)).toContain('deepseek-v4-pro')
     // The fallback catalog tracks the live `cli` roster, including the models
     // the product document lists that the console catalog used to withhold.
     expect(models.map(model => model.id)).toContain('hy4-preview')
     expect(models.map(model => model.id)).toContain('glm-5.3')
+    expect(models.map(model => model.id)).toContain('minimax-m3-pay')
+    expect(models.map(model => model.id)).not.toContain('auto')
 
     // The billing rate rides the display name so both the /model popup and the
     // composer seat show it; the id and the request path are untouched by this
@@ -190,24 +192,22 @@ describe('WorkBuddy Host settings integration', () => {
     const byId = new Map(models.map(model => [model.id, model]))
     expect(byId.get('glm-5.2')?.name).toBe('GLM-5.2 · x0.79 · 夜间折扣')
     expect(byId.get('glm-5.1')?.name).toBe('GLM-5.1 · x0.79')
-    expect(byId.get('auto')?.name).toBe('Auto')
+    expect(byId.get('kimi-k3-2')?.name).toBe('Kimi-K3 · x1.62')
     expect(byId.get('glm-5.2')?.description).toBeUndefined()
     expect(byId.get('glm-5.3')?.description).toBeUndefined()
 
     // Thinking controls are declared-set-only: models whose upstream row
     // carries `supportedEfforts` expose exactly those efforts; rows without a
-    // list (the older `{effort, summary}` shape) expose no control at all, so
-    // requests never carry `reasoning_effort` for them and the upstream
-    // default applies — matching the desktop app's own per-model gating.
-    const autoResolved = await ctx.llm.resolveModelInfo('workbuddy', 'auto')
-    expect(autoResolved.reasoning).toBeUndefined()
+    // list expose no control at all, so requests never carry `reasoning_effort`
+    // for them and the upstream default applies.
+    const undeclaredResolved = await ctx.llm.resolveModelInfo('workbuddy', 'glm-5.3')
+    expect(undeclaredResolved.reasoning).toBeUndefined()
     const flashResolved = await ctx.llm.resolveModelInfo('workbuddy', 'glm-5.3-flash')
     expect(flashResolved.reasoning?.efforts.map(effort => effort.id).sort()).toEqual(['high', 'low', 'max', 'off'])
 
-    // Image modalities follow the per-model catalog flag (fallback list here):
-    // image-capable entries expose `image`, glm-5.1 stays text-only.
+    // Image modalities follow the per-model catalog flag (fallback list here).
     const modalities = new Map(models.map(model => [model.id, model.inputModalities]))
-    expect(modalities.get('auto')).toContain('image')
+    expect(modalities.get('glm-5.3')).toContain('image')
     expect(modalities.get('glm-5.1')).toEqual(['text'])
   })
 
@@ -302,8 +302,8 @@ describe('WorkBuddy Host settings integration', () => {
     // declared efforts).
     const cn = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
     const ai = (await ctx.llm.listModels('workbuddy-ai')).map(model => model.id)
-    expect(cn).toContain('minimax-m3')
-    expect(ai).not.toContain('minimax-m3')
+    expect(cn).toContain('minimax-m3-pay')
+    expect(ai).not.toContain('minimax-m3-pay')
     expect(ai).toContain('gpt-5.6-luna')
     expect(cn).not.toContain('gpt-5.6-luna')
   })

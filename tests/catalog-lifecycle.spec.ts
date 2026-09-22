@@ -132,7 +132,7 @@ describe('catalog lifecycle', () => {
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['live-model'])
     })
     // The upstream roster replaced the built-in fallback entirely.
-    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).not.toContain('minimax-m3')
+    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).not.toContain('minimax-m3-pay')
   })
 
   it('keeps the fallback roster and retries after a failed fetch', async () => {
@@ -158,7 +158,7 @@ describe('catalog lifecycle', () => {
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
     })
-    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toContain('minimax-m3')
+    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toContain('minimax-m3-pay')
     expect(attempts).toBeGreaterThanOrEqual(1)
 
     // Without the retry this stayed on the fallback list until a manual
@@ -346,7 +346,7 @@ describe('catalog lifecycle', () => {
     expect(String(after.catalog.error)).toMatch(/503|upstream/i)
     const serving = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
     expect(serving).not.toContain('acct-a-model')
-    expect(serving).toContain('minimax-m3')
+    expect(serving).toContain('minimax-m3-pay')
 
     // Recovery: the same manual action once the upstream answers again.
     failCatalog = false
@@ -438,7 +438,7 @@ describe('identity changes during catalog loading', () => {
     await vi.waitFor(async () => {
       const ids = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
       expect(ids).not.toContain('account-a-model')
-      expect(ids).toContain('minimax-m3')
+      expect(ids).toContain('minimax-m3-pay')
     })
   }, 45_000)
 
@@ -470,7 +470,10 @@ describe('identity changes during catalog loading', () => {
     await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-b'))
 
     await vi.waitFor(async () => {
-      expect(calls).toBe(2)
+      // At least a catalogue request for the new account; the CN refresh also
+      // reads the console document for promo badges, so the exact total is an
+      // implementation detail of how many documents one refresh needs.
+      expect(calls).toBeGreaterThanOrEqual(2)
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['account-b-model'])
     })
     expect(aborted).toBe(true)

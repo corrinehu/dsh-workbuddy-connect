@@ -154,10 +154,10 @@ describe('per-variant route mount', () => {
     // Disjoint rosters, each served through its own catalog.
     const cnModels = (cnBody['models'] as { id: string }[]).map(model => model.id)
     const aiModels = (aiBody['models'] as { id: string }[]).map(model => model.id)
-    expect(cnModels).toContain('minimax-m3')
+    expect(cnModels).toContain('minimax-m3-pay')
     expect(aiModels).toContain('gpt-5.6-luna')
     expect(cnModels).not.toContain('gpt-5.6-luna')
-    expect(aiModels).not.toContain('minimax-m3')
+    expect(aiModels).not.toContain('minimax-m3-pay')
   })
 
   it('answers 404 on the other variants path, so the routes stay distinct', async () => {

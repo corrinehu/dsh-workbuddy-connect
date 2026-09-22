@@ -88,7 +88,7 @@ describe('manual probe consent and deduplication', () => {
   })
   it('rejects declared and unknown models before sending', async () => {
     const { service, send } = setup()
-    expect((await service.probe('glm-5.3', true)).state).toBe('unavailable')
+    expect((await service.probe('glm-5.3-flash', true)).state).toBe('unavailable')
     expect((await service.probe('not-in-catalog', true)).state).toBe('unavailable')
     expect(send).not.toHaveBeenCalled()
   })

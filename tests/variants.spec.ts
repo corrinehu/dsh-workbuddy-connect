@@ -238,19 +238,20 @@ describe('catalog visibility and separation', () => {
     const cn = FALLBACK_WORKBUDDY_MODELS.map(model => model.id)
     const ai = FALLBACK_WORKBUDDY_AI_MODELS.map(model => model.id)
     expect(ai).toHaveLength(20)
-    expect(cn).toHaveLength(16)
+    expect(cn).toHaveLength(17)
     expect(cn).toContain('deepseek-v4.1-flash')
     expect(cn).toContain('kimi-k2.8-preview')
     expect(cn).not.toContain('deepseek-v4-flash')
     expect(cn).toEqual([
-      'auto', 'hy4-preview', 'hy3', 'hy3-x', 'deepseek-v4.1-flash', 'glm-5.3',
-      'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo', 'kimi-k3-1',
-      'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6', 'minimax-m3', 'deepseek-v4-pro',
+      'hy4-preview', 'hy3', 'hy3-x', 'deepseek-v4.1-flash', 'glm-5.3',
+      'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
+      'minimax-m3-pay', 'minimax-m2.7', 'kimi-k3-2', 'kimi-k2.8-preview',
+      'kimi-k2.7', 'kimi-k2.6', 'deepseek-v4-pro',
     ])
     // International-only models must not appear in the CN roster, and vice
     // versa: the same id would otherwise carry the wrong rate and window.
     expect(ai).toContain('gpt-5.6-luna')
-    expect(ai).not.toContain('minimax-m3')
+    expect(ai).not.toContain('minimax-m3-pay')
     expect(cn).not.toContain('gpt-5.6-luna')
     expect(cn).not.toContain('hy4-preview-f')
   })
