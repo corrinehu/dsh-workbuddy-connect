@@ -437,7 +437,15 @@ function ContextTable({ models, t, useMaximumContextWindow, disabled, onUseMaxim
           : undefined
         return (
           <div key={model.id} style={quotaLabelStyle}>
-            <span>{model.name}</span>
+            {/*
+              * Name, then the picker's own rate-and-badge suffix. This tab is
+              * also where a user checks *which* models are being served —
+              * the detection list below the status tab shows only the ones with
+              * no declared levels, so `glm-5.3-flashx` and its declared
+              * low/high/max appear here or nowhere. A bare name made that list
+              * unreadable as a roster.
+              */}
+            <span>{[model.name, ...offerSuffix(model, t)].join(' · ')}</span>
             <span style={modelOfferStyle}>
               <span style={{ textAlign: 'right' }}>{formatTokens(capacity)}</span>
               {alternative !== undefined
@@ -465,6 +473,52 @@ function formatTokens(tokens: number): string {
 }
 
 /**
+ * The rate-and-badge suffix a card row shows beside a model's name.
+ *
+ * Deliberately the same suffix the model picker appends, so one model reads the
+ * same wherever it is listed. The rate is not decoration: `hy3` and `hy3-x` are
+ * both served as "Hy3" and declare the same shape, so it is the only thing that
+ * tells those two rows apart.
+ *
+ * @param model - one catalogue row.
+ * @param t - the card's translation function.
+ * @returns the parts to join after the name, in picker order.
+ */
+function offerSuffix(model: WorkBuddyWebModelBadge, t: WorkBuddyPluginCardInjected['t']): string[] {
+  return [
+    model.credits,
+    ...(model.badges ?? []).map(badge => modelBadgeLabel(badge, t)),
+  ].filter((part): part is string => part !== undefined && part !== '')
+}
+
+/**
+ * Label one probe candidate the way the model picker labels the same model.
+ *
+ * A candidate arrives as an id and nothing else. The card holds the catalogue
+ * in the same status document, so a row can name the model the way it is
+ * served instead of printing its id — which is what it used to do, and which
+ * read as a second, unfamiliar list (`glm-5.3`, `minimax-m2.7`) sitting beside
+ * the picker's names.
+ *
+ * @param id - the candidate's model id.
+ * @param model - the catalogue row serving it, when the catalogue lists it.
+ * @param recorded - the name kept with an observation; an observation carries
+ * its own copy so a result still reads after a model leaves the catalogue.
+ * @param t - the card's translation function.
+ * @returns the row's label.
+ */
+function candidateLabel(
+  id: string,
+  model: WorkBuddyWebModelBadge | undefined,
+  recorded: string | undefined,
+  t: WorkBuddyPluginCardInjected['t'],
+): string {
+  const name = model?.name ?? recorded ?? id
+  if (model === undefined) return name
+  return [name, ...offerSuffix(model, t)].join(' · ')
+}
+
+/**
  * Reasoning-effort detection section: consent switches, per-model detection,
  * and the recorded observations.
  *
@@ -475,13 +529,16 @@ function formatTokens(tokens: number): string {
  *   parameter ("this model does not check it"), never as a statement that a
  *   level is unsupported.
  */
-function ProbeSection({ probe, t, onDetect, onClear, busy }: {
+function ProbeSection({ probe, models, t, onDetect, onClear, busy }: {
   probe: WorkBuddyWebProbeSection
+  /** The catalogue these candidates come from, used to label each row. */
+  models?: readonly WorkBuddyWebModelBadge[]
   t: WorkBuddyPluginCardInjected['t']
   onDetect: (modelId: string) => void
   onClear: () => void
   busy: boolean
 }): React.ReactNode {
+  const offers = new Map((models ?? []).map(model => [model.id, model]))
   // Which model is awaiting confirmation. Confirmation is inline for the same
   // reason the Composer entry uses a bubble: a modal alert for a one-line
   // decision is heavier than the action it guards.
@@ -534,7 +591,7 @@ function ProbeSection({ probe, t, onDetect, onClear, busy }: {
           <div style={quotaGroupStyle}>
             {probe.candidates.map(id => {
               const result = probe.results.find(entry => entry.id === id)
-              const name = result?.name ?? id
+              const name = candidateLabel(id, offers.get(id), result?.name, t)
               return (
                 <div key={id} style={modelOfferStyle}>
                   <div style={probeRowStyle}>
@@ -559,7 +616,7 @@ function ProbeSection({ probe, t, onDetect, onClear, busy }: {
                           * in-flight request, so it cannot pick the label.
                           */}
                         {runningModel === id
-                          ? t('probeRunning', { model: id })
+                          ? t('probeRunning', { model: name })
                           : t(result === undefined ? 'probeStart' : 'probeRedetect')}
                       </button>
                     </span>
@@ -996,6 +1053,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                       {status.probe === undefined ? null : (
                         <ProbeSection
                           probe={status.probe}
+                          {...status.models === undefined ? {} : { models: status.models }}
                           t={t}
                           busy={busy}
                           onDetect={confirmDetect}

@@ -152,6 +152,46 @@ describe('WorkBuddy plugin card', () => {
     expect(buttonLabels()).toContain(en.probeStart)
   })
 
+  it('labels a candidate with the served name and rate, not its raw id', async () => {
+    // Regression: a candidate with no recorded observation rendered its raw id
+    // (`glm-5.3`), so the detection list looked like a different set of models
+    // from the picker's. The catalogue in the same status document carries the
+    // names — and the suffix is load-bearing: `hy3` and `hy3-x` are both served
+    // as "Hy3", so the rate is all that separates the two rows.
+    status()
+    statusBody.models = [
+      { id: 'glm-5.3', name: 'GLM-5.3', credits: 'x0.79' },
+      { id: 'hy3', name: 'Hy3', credits: 'x0.00', badges: ['限时免费'] },
+      { id: 'hy3-x', name: 'Hy3', credits: 'x0.05' },
+    ]
+    statusBody.probe = { consent: true, running: false, candidates: ['glm-5.3', 'hy3', 'hy3-x'], results: [] }
+    await mount()
+
+    const rendered = JSON.stringify(view!.toJSON())
+    expect(rendered).toContain('GLM-5.3 · x0.79')
+    expect(rendered).toContain(`Hy3 · x0.00 · ${en.badgeLimitedFree}`)
+    expect(rendered).toContain('Hy3 · x0.05')
+  })
+
+  it('lists every served model in the context tab, rate and badge included', async () => {
+    // The detection list above carries only models with no declared levels, so
+    // a declared model such as `glm-5.3-flashx` is visible in the card only
+    // here — and until this tab carried the picker's suffix, "is flashx being
+    // served?" could not be answered from the card at all.
+    status()
+    statusBody.models = [
+      { id: 'glm-5.3-flashx', name: 'GLM-5.3-FlashX', credits: 'x0.14', contextWindow: 1_000_000 },
+      { id: 'hy3', name: 'Hy3', credits: 'x0.00', badges: ['限时免费'], contextWindow: 192_000 },
+    ]
+    await mount()
+    await press(en.tabContext)
+
+    const rendered = JSON.stringify(view!.toJSON())
+    expect(rendered).toContain('GLM-5.3-FlashX · x0.14')
+    expect(rendered).toContain(`Hy3 · x0.00 · ${en.badgeLimitedFree}`)
+    expect(rendered).toContain('1M')
+  })
+
   it('shows the same list before and after a detection', async () => {
     status({ candidates: ['hy3', 'glm-5.2'] })
     await mount()
