@@ -11,12 +11,21 @@ const PACKAGE_VERSION = JSON.parse(
 /** Build-time define map; `src/version.ts` reads `__DSH_WORKBUDDY_VERSION__`. */
 const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION) }
 
+/**
+ * This build runs on TypeScript 7 (the native compiler). tsdown emits types
+ * through `rolldown-plugin-dts`, which warns that TS 7's API is not yet stable
+ * and that "some options will be unavailable". The emitted `lib/*.d.ts` is
+ * byte-identical to TypeScript 5.9's for this configuration (verified by hash),
+ * and nothing here passes options into `dts`, so the warning is informational —
+ * but if a `dts` option is ever needed, check it against TS 7 first.
+ */
+
 const CLIENT_EXTERNALS = [
   'react',
   'react/jsx-runtime',
   '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-runtime/client',
   '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-plugin-manager/client',
   '@deepseek-ai/dsh-client-locale/client',
 ] as const
 

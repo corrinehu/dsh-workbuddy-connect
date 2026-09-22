@@ -1,9 +1,18 @@
-/** WorkBuddy status card contributed to Harness Plugin configuration. */
+/**
+ * WorkBuddy status page for DSH's Plugins page.
+ *
+ * DSH 0.1.7 lists a plugin on the Plugins page and renders its configuration
+ * from the slots that page declares. A page of its own is contributed through
+ * `plugins.bundle.config`, keyed by the bundle's package name — the seat the
+ * Plugins page reserves for "this package's own configuration", as opposed to
+ * `plugins.item` (the official plugins' companion pages) and `plugins.row.config`
+ * (one row a bundle declares). The page renders one card per product variant.
+ */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
 import type { WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
@@ -57,10 +66,46 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
 
 /** Both cards, in display order. */
 export const CARD_VARIANTS: readonly WorkBuddyCardVariant[] = [CN_CARD_VARIANT, AI_CARD_VARIANT]
-/** Props delivered by the Plugin configuration item slot. */
-export type WorkBuddyPluginCardProps =
-  PropsRuntime<'settings.plugin.item'>
-  & Partial<WorkBuddyPluginCardInjected>
+
+/**
+ * The npm package name this bundle installs as, which is also the key DSH
+ * dispatches the bundle's configuration seat by.
+ *
+ * It must stay equal to `package.json`'s `name`: the Plugins page renders
+ * `plugins.bundle.config` with `entryKey = pkg.name` for each bundle it lists,
+ * so a key that names no package registers into the slot but is never rendered.
+ */
+export const WORKBUDDY_BUNDLE = 'dsh-workbuddy-connect'
+
+/** Props one variant's card reads; the page supplies both fields. */
+export type WorkBuddyPluginCardProps = Partial<WorkBuddyPluginCardInjected>
+
+/** Business face the page's slot registration injects. */
+export interface WorkBuddyPluginPageInjected {
+  t: (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string
+}
+
+/**
+ * Props the Plugins page binds for this bundle's configuration page.
+ *
+ * The owner supplies `view` (always `'page'` for a bundle, since a bundle's
+ * card has no one-liner) and, when the page owner can resolve an entry form,
+ * `form`. Neither is consumed: the page's content is live account state read
+ * from the plugin's own same-origin routes, not a configuration form.
+ */
+export type WorkBuddyPluginPageProps =
+  PropsRuntime<'plugins.bundle.config'>
+  & Partial<WorkBuddyPluginPageInjected>
+
+/** Layout of the page: one card per variant, stacked. */
+const pageStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  margin: 0,
+  padding: 0,
+  listStyle: 'none',
+}
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -1013,5 +1058,27 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
           </div>
         : null}
     </li>
+  )
+}
+
+/**
+ * Render this bundle's configuration page: one card per product variant.
+ *
+ * Two cards rather than one merged card because each card owns a disclosure
+ * state, a poll, and an account; sharing one component would tie the CN
+ * account's refresh to the international one's, and a single reading of
+ * "signed in" could never say which product it referred to.
+ *
+ * Both are rendered unconditionally. A variant with no usable credential hides
+ * its *models*, not its card: the card is where the user finds out why nothing
+ * is offered and how to fix it, which is exactly the state that has to stay
+ * visible.
+ */
+export function WorkBuddyPluginPage({ t }: WorkBuddyPluginPageProps): React.ReactNode {
+  if (t === undefined) throw new Error('WorkBuddy plugin page requires its translation function')
+  return (
+    <ul style={pageStyle}>
+      {CARD_VARIANTS.map(variant => <WorkBuddyPluginCard key={variant.id} t={t} variant={variant} />)}
+    </ul>
   )
 }

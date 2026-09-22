@@ -1,8 +1,7 @@
 import z from "@deepseek-ai/schemastery";
 import "@earendil-works/pi-ai";
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
-import { Context } from "@deepseek-ai/cordis";
-import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
+import { Context, Volatile } from "@deepseek-ai/cordis";
 import { AttachmentStore } from "@deepseek-ai/dsh-attachment";
 //#region src/app-version.d.ts
 /** Basename of the saved version under `$DSH_HOME`. */
@@ -1143,56 +1142,69 @@ declare const name = "llm-workbuddy";
 /** The model registry required before the provider can register. */
 declare const inject: string[];
 /**
- * Settings namespace owning the CN card's section.
+ * The loader entry id this bundle's own patch declares, which is also this
+ * plugin's settings namespace.
  *
- * DSH 0.1.2 dropped the `settingsNamespace()` branding function: a namespace is
- * now a nominal string, validated by the type system where it is used rather
- * than at runtime by a function call. The brand is compile-time only, so this
- * stays the plain string it always was — every comparison, descriptor lookup,
- * and `dsh` config file still sees `'workbuddy'`. It is cast once here so the
- * public constant carries the seam's type without pulling the brand helper
- * into this package (upstream DSH plugins, `dsh-llm-pi-ai` included, pass
- * their namespaces as plain string literals).
+ * DSH 0.1.7 rebuilt the settings seam around Loader entries: a namespace is no
+ * longer an arbitrary string a plugin installs a section under, it is the
+ * profile entry id of the plugin instance itself, and the form is derived from
+ * the plugin's own `Config` schema (only fields declared `.volatile()`).
+ * `cordis.patch.yml` in this package pins the entry id, so the plugin and its
+ * client half agree on it without a handshake. {@link settingsNamespace} still
+ * prefers the live fiber's entry id when the profile renamed the row.
  */
-declare const WORKBUDDY_SETTINGS_NS: SettingsNamespace;
+declare const WORKBUDDY_ENTRY_ID = "llm-workbuddy";
 /**
- * Settings namespace owning the international card's section.
+ * Plugin configuration.
  *
- * One namespace per card, not one shared: the settings Plugins tab dispatches a
- * card by rendering `settings.plugin.item` with `entryKey = ns` for each
- * namespace the Host serves, and skips an entry whose key names no served
- * namespace. With a single installed section, the international card registers
- * into the slot but is never rendered — the card list is built from the Host's
- * sections, not from the slot's entries. Each card therefore needs its own
- * installed section whose namespace equals the card's slot key.
+ * Every field is a {@link Volatile} reference since DSH 0.1.7: the settings
+ * form is derived from this schema, and only volatile fields are editable
+ * live — a change to them is committed into the running fiber's references and
+ * announced as `loader/volatile-update` instead of remounting the plugin. A
+ * non-volatile field would still be ordinary configuration (editable through
+ * the profile patch) but would be invisible to the settings surface and would
+ * reload the whole plugin when edited.
  */
-declare const WORKBUDDY_AI_SETTINGS_NS: SettingsNamespace;
-/** Plugin configuration. */
 interface Config {
   /** Explicit WorkBuddy (CN) desktop auth-file path, overriding env and platform defaults. */
-  authFile?: string;
+  authFile?: Volatile<string | undefined>;
   /** Explicit WorkBuddy AI (international) desktop auth-file path, overriding env and platform defaults. */
-  authFileAI?: string;
+  authFileAI?: Volatile<string | undefined>;
   /**
    * Whether the user has authorized sending probe requests about reasoning
    * efforts. Off by default: a probe spends real credit, so nothing is sent
    * until the user explicitly agrees.
    */
-  probeConsent?: boolean;
+  probeConsent?: Volatile<boolean>;
   /** Use the largest context window the international catalog explicitly offers. */
-  useMaximumContextWindow?: boolean;
+  useMaximumContextWindow?: Volatile<boolean>;
 }
-declare const Config: z<Config>;
+declare const Config: z<Schemastery.ObjectS<NoInfer<{
+  authFile: z<string, string, "volatile">;
+  authFileAI: z<string, string, "volatile">;
+  probeConsent: z<boolean, boolean, "volatile-defined">;
+  useMaximumContextWindow: z<boolean, boolean, "volatile-defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+  authFile: z<string, string, "volatile">;
+  authFileAI: z<string, string, "volatile">;
+  probeConsent: z<boolean, boolean, "volatile-defined">;
+  useMaximumContextWindow: z<boolean, boolean, "volatile-defined">;
+}>>, "plain">;
 /**
  * Start both variants: their loopback endpoints, the `workbuddy` and
- * `workbuddy-ai` providers, their configuration cards, and their
+ * `workbuddy-ai` providers, this plugin's configuration page, and their
  * credential-driven catalog lifecycles.
  *
  * Each variant registers unconditionally; what varies is whether its catalog is
  * *visible*. An empty catalog is how DSH hides a model group (the host filters
  * out groups with no models), which keeps a sign-in that happens after startup
  * working without re-registering the provider.
+ *
+ * The configuration page is the browser half's own contribution to DSH's
+ * Plugins page (`plugins.bundle.config`). That page is this plugin's own, so it
+ * is declared here — with `auto: false` — rather than derived from the schema
+ * like a third-party configuration surface would be.
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, desktopAuthCandidatesFor, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, resolveAppVersion, resolveChatIdentity, validAppVersion, validCliVersion, variantFor, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath };
+export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_ENTRY_ID, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, desktopAuthCandidatesFor, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, resolveAppVersion, resolveChatIdentity, validAppVersion, validCliVersion, variantFor, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath };

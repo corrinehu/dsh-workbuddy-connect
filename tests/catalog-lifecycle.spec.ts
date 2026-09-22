@@ -5,12 +5,11 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as WorkBuddy from '../src/index.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { fingerprintModel } from '../src/probe-store.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
+import { FakeSettings } from './fake-settings.ts'
 
 /**
  * Catalog lifecycle: what happens across a credential change and a failed fetch.
@@ -19,20 +18,6 @@ import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
  * behaviour under test lives in the wiring rather than in any one module — the
  * credential sweep, the catalog gate, and the retry backoff all have to agree.
  */
-
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.storedDocument))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
-  }
-}
 
 const CLEANUP: (() => Promise<void>)[] = []
 let context: Context | undefined
@@ -119,9 +104,13 @@ async function boot(): Promise<Context> {
   const ctx = new Context()
   context = ctx
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(MemorySettings)
+  await ctx.plugin(FakeSettings)
+  const settings = ctx.settings as unknown as FakeSettings
   await ctx.plugin(FakeWebServer)
-  await ctx.plugin(WorkBuddy, {})
+  const fiber = await ctx.plugin(WorkBuddy, {})
+  // The Host binds a namespace to the entry that owns it; with no Loader in a
+  // bare Context the plugin falls back to the entry id its own patch declares.
+  settings.bind(WorkBuddy.WORKBUDDY_ENTRY_ID, { config: fiber.config, ctx: fiber.ctx })
   await vi.waitFor(() => {
     expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
   })

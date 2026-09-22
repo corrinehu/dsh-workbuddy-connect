@@ -1,26 +1,29 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, type Fiber } from '@deepseek-ai/cordis'
+import { isVolatile } from '@deepseek-ai/cosmokit'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as WorkBuddy from '../src/index.ts'
+import { FakeSettings } from './fake-settings.ts'
 
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.storedDocument))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
-  }
-}
+/**
+ * Host settings integration: the plugin's configuration and its namespace
+ * under DSH 0.1.7's entry-keyed settings model.
+ *
+ * The seam changed shape in 0.1.7. A plugin no longer installs a settings
+ * section under a name of its own choosing; `settings.describe()` projects the
+ * volatile fields of every live profile entry, keyed by that entry's id, and a
+ * write is committed into the running plugin's live references. What this
+ * plugin must therefore get right is narrower and more concrete than before:
+ * its fields must be volatile (or nothing can edit them), the namespace it
+ * hands the provider directory and writes through must be its own entry id, and
+ * a committed value must reach the derived state that was built from it.
+ *
+ * {@link FakeSettings} drives the real commit protocol so these cases assert
+ * the plugin's actual reaction rather than a mock's.
+ */
 
 let context: Context | undefined
 let root: string | undefined
@@ -42,60 +45,98 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+/**
+ * The fields a settings surface can offer, read off the plugin's own schema.
+ *
+ * This is the contract that replaced `installSection`: the Loader projects the
+ * entry's `Config` schema, and only fields that resolve to a live reference are
+ * editable. A field that regressed to a plain value would silently disappear
+ * from every settings surface rather than failing loudly, so it is asserted
+ * here instead.
+ */
+function volatileFields(): string[] {
+  const resolved: Record<string, unknown> = WorkBuddy.Config({})
+  return Object.entries(resolved)
+    .filter(([, value]) => isVolatile(value))
+    .map(([key]) => key)
+    .sort()
+}
+
+/** Boot the plugin against a stubbed Host and hand back its settings double. */
+async function boot(options: Record<string, unknown> = {}): Promise<{ ctx: Context; settings: FakeSettings; fiber: Fiber }> {
+  const ctx = new Context()
+  context = ctx
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(FakeSettings)
+  const settings = ctx.settings as unknown as FakeSettings
+  const fiber = await ctx.plugin(WorkBuddy, options)
+  // The Host binds a namespace to the entry that owns it; a bare Context has no
+  // Loader, so the plugin falls back to the entry id its own patch declares.
+  settings.bind(WorkBuddy.WORKBUDDY_ENTRY_ID, { config: fiber.config, ctx: fiber.ctx })
+  return { ctx, settings, fiber }
+}
+
 describe('WorkBuddy Host settings integration', () => {
-  it('restores the saved maximum-window preference after restarting and can disable it', async () => {
-    root = await mkdtemp(join(tmpdir(), 'workbuddy-context-restart-'))
-    const settingsFile = join(root, 'settings.json')
+  it('applies the maximum-window preference and follows a live write without remounting', async () => {
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-context-preference-'))
     const aiFile = join(root, 'ai.info')
-    await writeFile(settingsFile, '{}')
     await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
     vi.stubEnv('DSH_HOME', root)
     vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
-    class FileSettings extends SettingsProvider {
-      readonly writable = true
-      protected async load(): Promise<Record<string, unknown>> {
-        return JSON.parse(await readFile(settingsFile, 'utf8'))
-      }
-      protected async persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-        const document = await this.load()
-        document[ns] = section
-        await writeFile(settingsFile, JSON.stringify(document))
-      }
-    }
-    const boot = async (): Promise<Context> => {
-      const ctx = new Context()
-      context = ctx
-      await ctx.plugin(LlmRuntime)
-      await ctx.plugin(FileSettings)
-      await ctx.plugin(WorkBuddy, {})
-      await vi.waitFor(async () => {
-        expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
-      })
-      return ctx
-    }
-    let ctx = await boot()
-    // Fresh profile, setting never touched: the default is on, so the model
-    // resolves at its largest declared window before any update is written.
+
+    const { ctx, settings } = await boot()
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+    // Fresh profile, setting never touched: the schema default is on, so the
+    // model resolves at its largest declared window.
     expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
-    await ctx.fiber.dispose()
-    ctx = await boot()
-    // Still on across a restart with nothing stored (schema default, not state).
-    expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
-    // An explicit opt-out must survive restarts: the flipped default may not
-    // resurrect the preference the user turned off.
-    await ctx.settings.update('workbuddy-ai', { useMaximumContextWindow: false })
+
+    // A settings write reaches the plugin as a volatile commit. The reference
+    // changes in place, so the catalog — which is derived state rather than a
+    // per-request read — has to be re-applied from the new value.
+    const accepted = await settings.update(WorkBuddy.WORKBUDDY_ENTRY_ID, { useMaximumContextWindow: false })
+    expect(accepted).toBeUndefined()
+    expect(settings.writes).toEqual([
+      { ns: WorkBuddy.WORKBUDDY_ENTRY_ID, patch: { useMaximumContextWindow: false } },
+    ])
     await vi.waitFor(async () => {
       expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
     })
-    await ctx.fiber.dispose()
-    ctx = await boot()
-    expect(ctx.settings.get('workbuddy-ai')).toMatchObject({ useMaximumContextWindow: false })
-    expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
+    // Still one live registration: the commit must not have remounted the
+    // plugin, because a remount would drop the loopback endpoint and with it
+    // every in-flight session's route.
+    expect(ctx.llm.listConfigurableProviders().map(entry => entry.provider)).toEqual(
+      expect.arrayContaining(['workbuddy', 'workbuddy-ai']),
+    )
   })
 
-  it('exposes the provider directory entry, the settings section, and the fallback model list', async () => {
+  it('honors a preference supplied as configuration, not only as a later write', async () => {
+    root = await mkdtemp(join(tmpdir(), 'workbuddy-context-config-'))
+    const aiFile = join(root, 'ai.info')
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('DSH_HOME', root)
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
+
+    // An explicit opt-out arrives through the profile patch, which is the
+    // durable half of the same form; it is applied before any model resolves.
+    const { ctx } = await boot({ useMaximumContextWindow: false })
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
+    })
+    expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
+    // Flipping it on afterwards is the live half, and must be reversible.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_ENTRY_ID, { useMaximumContextWindow: true })
+    await vi.waitFor(async () => {
+      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
+    })
+  })
+
+  it('serves its own entry as the settings namespace and declares every field volatile', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-settings-'))
     vi.stubEnv('DSH_HOME', root)
     // This case asserts the CN fallback roster, which is served only to a
@@ -109,45 +150,44 @@ describe('WorkBuddy Host settings integration', () => {
     // Signing in would otherwise make this case perform a real request to the CN
     // catalog endpoint. These tests must not touch the network, and the roster
     // asserted below is the compiled-in fallback, so the fetch is stubbed to
-    // fail exactly as the sibling case does rather than depending on the remote.
+    // fail rather than depending on the remote.
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
-    const ctx = new Context()
-    context = ctx
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, {})
+
+    const { ctx } = await boot()
 
     // Registration rides on the loopback shim's listening event.
     await vi.waitFor(() => {
       expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     })
+    // The directory entry names the plugin's OWN entry id as its namespace:
+    // that id is the key `settings.describe()` publishes the form under, and
+    // what the Models settings page joins on to render the configuration.
     expect(ctx.llm.listConfigurableProviders()).toContainEqual({
       provider: 'workbuddy',
       displayName: 'WorkBuddy',
-      settingsNs: 'workbuddy',
+      settingsNs: WorkBuddy.WORKBUDDY_ENTRY_ID,
       settingsPath: [],
       declared: false,
     })
+    expect(WorkBuddy.WORKBUDDY_ENTRY_ID).toBe('llm-workbuddy')
 
-    // The section is what the Models settings page joins on to render a card.
-    const descriptor = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
-    expect(descriptor).toBeDefined()
+    // Everything the form can edit is volatile. A field that is not would be
+    // missing from `settings.describe()` entirely, so this is what "the plugin
+    // is configurable" now means.
+    expect(volatileFields()).toEqual(['authFile', 'authFileAI', 'probeConsent', 'useMaximumContextWindow'])
 
     const models = await ctx.llm.listModels('workbuddy')
     expect(models.map(model => model.id)).toContain('auto')
     expect(models.map(model => model.id)).toContain('deepseek-v4-pro')
-    // The fallback catalog tracks the live `cli` roster, including the newer
-    // models the desktop app offers that older builds lacked.
+    // The fallback catalog tracks the live `cli` roster, including the models
+    // the product document lists that the console catalog used to withhold.
     expect(models.map(model => model.id)).toContain('hy4-preview')
     expect(models.map(model => model.id)).toContain('glm-5.3')
 
-    // The billing rate rides the display name (and the advisory description)
-    // so both the /model popup and the composer seat show it; the id and the
-    // request path are untouched by this display-only decoration.
+    // The billing rate rides the display name so both the /model popup and the
+    // composer seat show it; the id and the request path are untouched by this
+    // display-only decoration.
     const byId = new Map(models.map(model => [model.id, model]))
-    // Since DSH 0.1.2 the composer seat renders the model name only, so both
-    // the billing rate and the declared promo badges ride the name itself;
-    // description stays untouched everywhere.
     expect(byId.get('glm-5.2')?.name).toBe('GLM-5.2 · x0.79 · 夜间折扣')
     expect(byId.get('glm-5.1')?.name).toBe('GLM-5.1 · x0.79')
     expect(byId.get('auto')?.name).toBe('Auto')
@@ -169,11 +209,6 @@ describe('WorkBuddy Host settings integration', () => {
     const modalities = new Map(models.map(model => [model.id, model.inputModalities]))
     expect(modalities.get('auto')).toContain('image')
     expect(modalities.get('glm-5.1')).toEqual(['text'])
-
-    // A settings write validates against the schema and persists.
-    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { authFile: '/tmp/other-workbuddy.info' })
-    const updated = ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)
-    expect((updated?.value as Record<string, unknown>)['authFile']).toBe('/tmp/other-workbuddy.info')
   })
 
   /**
@@ -182,7 +217,7 @@ describe('WorkBuddy Host settings integration', () => {
    * than through registration. That is what lets a sign-in that happens while
    * DSH is already running surface without a restart.
    */
-  it('registers both variants and keeps each variant identity separate', async () => {
+  it('registers both variants against one namespace and keeps each variant identity separate', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-dual-'))
     vi.stubEnv('DSH_HOME', root)
     // Shorten the credential sweep: the assertions below change a setting and
@@ -199,11 +234,7 @@ describe('WorkBuddy Host settings integration', () => {
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
 
-    const ctx = new Context()
-    context = ctx
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, {})
+    const { ctx, settings } = await boot()
 
     await vi.waitFor(() => {
       expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(
@@ -211,44 +242,32 @@ describe('WorkBuddy Host settings integration', () => {
       )
     })
 
-    // Each provider carries its own display name, which is the model group
-    // heading the picker renders — and its OWN settings namespace: the Models
-    // page resolves `settingsNs` against served sections, so a shared ns would
-    // render both providers onto one card.
+    // Each provider carries its own display name — the model group heading the
+    // picker renders — and both join the ONE namespace this plugin owns. Since
+    // 0.1.7 a namespace IS a profile entry id, and one plugin is one entry, so
+    // per-variant namespaces are no longer expressible; the per-variant split
+    // moved into the fields (`authFile` / `authFileAI`).
     expect(ctx.llm.listConfigurableProviders()).toEqual(expect.arrayContaining([
-      { provider: 'workbuddy', displayName: 'WorkBuddy', settingsNs: 'workbuddy', settingsPath: [], declared: false },
-      { provider: 'workbuddy-ai', displayName: 'WorkBuddy AI', settingsNs: 'workbuddy-ai', settingsPath: [], declared: false },
+      {
+        provider: 'workbuddy',
+        displayName: 'WorkBuddy',
+        settingsNs: WorkBuddy.WORKBUDDY_ENTRY_ID,
+        settingsPath: [],
+        declared: false,
+      },
+      {
+        provider: 'workbuddy-ai',
+        displayName: 'WorkBuddy AI',
+        settingsNs: WorkBuddy.WORKBUDDY_ENTRY_ID,
+        settingsPath: [],
+        declared: false,
+      },
     ]))
 
-    // THE DISPATCH CONTRACT. The Plugins tab renders a card by
-    // `renderSlot('settings.plugin.item', {}, { entryKey: ns })` for each
-    // namespace the Host serves, and skips an entry whose key names no served
-    // namespace — the tab builds its list from sections, never from the slot's
-    // registrations. A card whose variant id is not a served ns therefore
-    // registers but never renders, which is exactly the bug this pins: every
-    // variant id must be an installed section's namespace.
-    const served = new Set(ctx.settings.describe().map(entry => entry.ns))
-    for (const variant of WorkBuddy.WORKBUDDY_VARIANTS) {
-      expect(served, `card key "${variant.id}" must be a served settings namespace`).toContain(variant.id)
-    }
-    expect(served).toContain(WorkBuddy.WORKBUDDY_AI_SETTINGS_NS)
-
-    // Each section owns only its own fields, so one card's form cannot edit the
-    // other's path. `describe()` reports the schema as schemastery's ref graph;
-    // the root object's `dict` is the field map.
-    const fieldsOf = (ns: string): string[] => {
-      const descriptor = ctx.settings.describe().find(entry => entry.ns === ns)
-      const root = (descriptor?.schema as { refs?: Record<string, { dict?: Record<string, unknown> }>, uid?: string } | undefined)?.refs?.[String((descriptor?.schema as { uid?: number } | undefined)?.uid)]
-      return Object.keys(root?.dict ?? {})
-    }
-    expect(fieldsOf('workbuddy')).toContain('authFile')
-    expect(fieldsOf('workbuddy')).not.toContain('authFileAI')
-    expect(fieldsOf('workbuddy-ai')).toEqual(['authFileAI', 'useMaximumContextWindow'])
-
-    // A write through one section must reach ONLY that variant's store. The
-    // schema assertions above prove the two forms are split; this proves the
-    // wiring behind them is too. Without it, a section could carry the right
-    // field while `onChange` handed it to the wrong store and nothing above
+    // A write through one field must reach ONLY that variant's store. The
+    // schema assertions above prove both paths exist; this proves the wiring
+    // behind them is split. Without it, `authFileAI` could carry the right
+    // value while the sweep handed it to the wrong store, and nothing above
     // would notice.
     //
     // Observable chosen deliberately: point `authFileAI` at a file holding a
@@ -259,7 +278,7 @@ describe('WorkBuddy Host settings integration', () => {
     // "reached some store".
     const wrongRegionForAi = join(root, 'cn-credential-for-ai.info')
     await writeFile(wrongRegionForAi, credentialDocument('copilot.tencent.com'))
-    await ctx.settings.update('workbuddy-ai', { authFileAI: wrongRegionForAi })
+    await settings.update(WorkBuddy.WORKBUDDY_ENTRY_ID, { authFileAI: wrongRegionForAi })
     // A bounded settle rather than waitFor: if the wiring were broken the group
     // would simply never change, and an assertion states that plainly instead
     // of surfacing as a timeout. Two sweeps at the 100 ms interval above.
@@ -267,16 +286,14 @@ describe('WorkBuddy Host settings integration', () => {
     expect(await ctx.llm.listModels('workbuddy-ai')).toEqual([])
     expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
 
-    // And the setting is genuinely read back through the merged config: putting
-    // a valid international file back restores the group.
-    await ctx.settings.update('workbuddy-ai', { authFileAI: aiFile })
+    // And the setting is genuinely read back through the live reference:
+    // putting a valid international file back restores the group.
+    await settings.update(WorkBuddy.WORKBUDDY_ENTRY_ID, { authFileAI: aiFile })
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
     }, { timeout: 10_000 })
-
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
-      expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
     })
 
     // The two variants must not share a roster: the international models are
@@ -289,15 +306,6 @@ describe('WorkBuddy Host settings integration', () => {
     expect(ai).not.toContain('minimax-m3')
     expect(ai).toContain('gpt-5.6-luna')
     expect(cn).not.toContain('gpt-5.6-luna')
-
-    // The preference is on by default: a profile that never touched the setting
-    // gets the largest declared window, and an explicit opt-out restores the
-    // upstream's own default.
-    expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(1_000_000)
-    await ctx.settings.update('workbuddy-ai', { useMaximumContextWindow: false })
-    await vi.waitFor(async () => {
-      expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'deepseek-v4.1-flash')).context?.contextWindow).toBe(300_000)
-    })
   })
 
   /**
@@ -311,11 +319,7 @@ describe('WorkBuddy Host settings integration', () => {
     vi.stubEnv('DSH_HOME', root)
     vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', join(root, 'absent-ai.info'))
-    const ctx = new Context()
-    context = ctx
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, {})
+    const { ctx } = await boot()
 
     await vi.waitFor(() => {
       expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
@@ -329,13 +333,14 @@ describe('WorkBuddy Host settings integration', () => {
     // models, not by unregistering, so a later sign-in needs no restart.
     expect(ctx.llm.listConfigurableProviders().map(entry => entry.provider))
       .toEqual(expect.arrayContaining(['workbuddy', 'workbuddy-ai']))
-    // And the settings card is still there to explain how to sign in.
-    expect(ctx.settings.describe().find(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBeDefined()
+    // And the plugin is still configurable, which is what lets the user point
+    // it at the right auth file from the UI.
+    expect(volatileFields()).toContain('authFile')
   })
 
   /**
    * A credential for the other product is refused, and the refusal is what the
-   * card shows. Silently treating it as "signed out" would send the user to
+   * page shows. Silently treating it as "signed out" would send the user to
    * re-authenticate when the actual fix is a file path.
    */
   it('refuses a cross-product credential instead of using it', async () => {
@@ -347,11 +352,7 @@ describe('WorkBuddy Host settings integration', () => {
     await writeFile(crossFile, credentialDocument('copilot.tencent.com'))
     vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', crossFile)
-    const ctx = new Context()
-    context = ctx
-    await ctx.plugin(LlmRuntime)
-    await ctx.plugin(MemorySettings)
-    await ctx.plugin(WorkBuddy, {})
+    const { ctx } = await boot()
 
     const models = await (async () => {
       await vi.waitFor(() => {
