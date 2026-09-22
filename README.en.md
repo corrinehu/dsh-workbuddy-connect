@@ -12,15 +12,15 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
 ![WorkBuddy models in the DSH model picker](assets/1.png)
 
-- **CN and international side by side**: the CN app appears as the **WorkBuddy** group and the international one as **WorkBuddy AI**. Their models, accounts, and credit never mix. **Each group follows only its own app's sign-in**: install just the international app and only WorkBuddy AI appears; install both and both groups appear; sign out of one and that group goes away. Settings likewise shows **one card per version**, each with its own account and balance.
+- **CN and international side by side**: the CN app appears as the **WorkBuddy** group and the international one as **WorkBuddy AI**. Their models, accounts, and credit never mix. **Each group follows only its own app's sign-in**: install just the international app and only WorkBuddy AI appears; install both and both groups appear; sign out of one and that group goes away. The plugin's own page on the **Plugins** page likewise shows **one card per version**, each with its own account and balance.
 
 ![WorkBuddy AI models in the DSH model picker](assets/5.png)
 
-- **Image input**: most models accept images — paste or drop one straight into the conversation (GLM-5.3-Flash, GLM-5.2, the DeepSeek-V4 series, and more); the few text-only models (e.g. GLM-5.1) clearly say so.
+- **Image input**: most models accept images — paste or drop one straight into the conversation (GLM-5.3-Flash, GLM-5v-Turbo, the DeepSeek-V4 series, and more); the few text-only models (e.g. GLM-5.1, GLM-5.2) clearly say so.
 
-- **Reasoning levels**: levels explicitly declared by WorkBuddy appear directly — for example, GLM-5.3 and GLM-5.3-Flash offer low / high / max. For some models that do not declare selectable levels, Web and Desktop provide a **Reasoning levels** control in the model picker for a manual check. It sends a few requests and may consume credit. Models without a check result or selectable levels continue to use WorkBuddy's default.
+- **Reasoning levels**: levels explicitly declared by WorkBuddy appear directly — for example, GLM-5.3-Flash and GLM-5.3-FlashX offer low / high / max. For some models that do not declare selectable levels, Web and Desktop provide a **Reasoning levels** control in the model picker for a manual check. It sends a few requests and may consume credit. Models without a check result or selectable levels continue to use WorkBuddy's default.
 
-- **Status and detection**: Settings → Plugins → the matching card shows the account, token validity, remaining credit, and model offers. It also lets you refresh the model list manually and shows whether the current list came from the upstream or from the built-in fallback, and provides manual reasoning-level detection for eligible models.
+- **Status and detection**: the **Plugins** page → this plugin → its configuration page shows the account, token validity, remaining credit, and model offers. It also lets you refresh the model list manually and shows whether the current list came from the upstream or from the built-in fallback, and provides manual reasoning-level detection for eligible models.
 
 - **Enterprise credit**: on the CN product, enterprise accounts (non-empty `enterpriseId`) read their cycle quota from the enterprise billing endpoint, and the card shows an "enterprise quota" row with the cycle reset time.
 
@@ -31,6 +31,8 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 ![Settings card showing the plugin](assets/2.png)
 
 The expanded card has three tabs: **Status** shows the account, token validity, total credit, catalog source, and reasoning-level detection; **Context** lists each model's context window (where the international version offers a larger declared window, the "Use the largest declared context window" switch lives here — it is **on by default**, so DSH sizes context compression to the largest window the upstream declares; turn it off to follow the upstream default instead, and the preference persists across restarts); **Details** shows per-package credit and model offers. The CN and international versions each get their own card, showing their own account's information.
+
+The plugin's own configuration fields (`authFile`, `authFileAI`, `probeConsent`, `useMaximumContextWindow`) are read and written by DSH's own settings layer: DSH derives the editable fields from the schema the plugin declares, applies a change live without a restart, and persists it into the active profile's patch file; editing `cordis.patch.yml` directly works too. The "use the largest declared context window" switch above goes through that same write path.
 
 ![Settings card showing account and remaining credit](assets/3.png)
 
@@ -52,14 +54,18 @@ Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin r
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
-| **0.3.2+** (international support since `0.5.0`) | `0.1.5-rc.1` or newer | `2.0.7`+ (bundled core `0.1.5-rc.1`) |
+| **0.6.0+** (international support since `0.5.0`) | `0.1.7-alpha.1` or newer | apps whose bundled core is `0.1.7-alpha.1` or newer |
+| **0.3.2 – 0.5.4** | `0.1.5-rc.1` and up (before `0.1.7`) | `2.0.7`+ (bundled core `0.1.5-rc.1`) |
 | **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
 | **0.2.6** | `0.1.1-rc.2` (older line) | `2.0.3` / `2.0.4` |
 
-- On DSH `0.1.5-rc.1` or newer, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`
+- On DSH `0.1.7-alpha.1` or newer, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`
+- Still on DSH `0.1.5-rc.1` through `0.1.6`? Stay on `0.5.4`: `dsh plugin --profile web add dsh-workbuddy-connect@0.5.4`
 - Still on DSH `0.1.2-rc.1`? Stay on `0.3.1`: `dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - Still on DSH `0.1.1-rc.2`? Stay on the older release: `dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
-- The desktop app has bundled `0.1.5-rc.1` since `2.0.7`, so it can use `0.3.2` and newer directly; `2.0.5` and earlier apps (bundled `0.1.2-rc.1`) should stay on `0.3.1`
+- Apps whose bundled core is `0.1.7-alpha.1` or newer can use `0.6.0` and newer directly; apps bundling `0.1.5-rc.1` (from `2.0.7`) should stay on `0.5.4`; `2.0.5` and earlier apps (bundled `0.1.2-rc.1`) should stay on `0.3.1`
+
+> `0.6.0` adapts to the settings layer DSH rebuilt in 0.1.7: a form is owned by a **profile entry id** rather than by a section a plugin installs, the page moved from **Settings → Plugins** to the **Plugins** page, and the editable fields are derived from the plugin's own schema. `0.6.0` and `0.5.4` are therefore mutually exclusive; a mismatched core either fails to load the plugin or shows no configuration page.
 
 The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI**. Pick the install command that matches the profile you use.
 
@@ -91,7 +97,7 @@ dsh --profile dsh-tui
 
 > Note: the `dsh-tui` profile requires pnpm 11 to install packages (a different pnpm on PATH fails with `ERR_PNPM_UNEXPECTED_STORE` — use `npx pnpm@11`).
 
-After installing, switch to a WorkBuddy model in the model picker of the interface you chose. On Web and Desktop, the settings card shows the account, token validity, and remaining credit, can refresh the model list manually, and can check eligible models for reasoning levels; the CN and international versions each have their own card. On TUI, configure `authFile` in `/settings` (or `authFileAI` for the international version).
+After installing, switch to a WorkBuddy model in the model picker of the interface you chose. On Web and Desktop, this plugin's configuration page on the **Plugins** page shows the account, token validity, and remaining credit, can refresh the model list manually, and can check eligible models for reasoning levels; the CN and international versions sit on that one page, one card each. On TUI, configure `authFile` in `/settings` (or `authFileAI` for the international version).
 
 ## CLI
 
@@ -108,10 +114,12 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 ## Known limitations
 
-- Verified on macOS with the DSH Web / Desktop / TUI profiles (as of 0.3.2 this requires `0.1.5-rc.1`+ and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer — see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` (or `WORKBUDDY_AI_AUTH_FILE` for the international version) at the actual file.
-- **The international version's model catalog comes from the app's own interface**: the service splits it by User-Agent, which is a private implementation detail that a server-side change can break. When that happens the plugin degrades to this account's last successful catalog and then to its built-in roster, showing the source (live / saved / built-in), the fetch time, and the failure reason on the card — but long-term compatibility is not guaranteed. The CN version's catalog uses the same interface as the official CLI and is unaffected.
+- Verified on macOS with the DSH Web / Desktop / TUI profiles (as of `0.6.0` this requires `0.1.7-alpha.1`+ and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer — see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` (or `WORKBUDDY_AI_AUTH_FILE` for the international version) at the actual file.
+- **The model catalog comes from the desktop product's own interface**: both variants read `/v3/config`, and the service splits that document by User-Agent (a CLI-shaped UA yields the CLI's roster, an App-shaped one yields the App's internal roster). This is a private implementation detail that a server-side change can break. When that happens the plugin degrades to this account's last successful catalog and then to its built-in roster, showing the source (live / saved / built-in), the fetch time, and the failure reason on the card — but long-term compatibility is not guaranteed.
+- **The CN roster follows the desktop product's CLI list**: 17 models, matching the desktop app's list, including the newer `glm-5.3-flashx`, `kimi-k3-2`, `minimax-m3-pay` and `minimax-m2.7`. `auto` is no longer on that list, so the plugin no longer offers it (older builds listed it first). Promo badges exist only in the console catalog document, so every refresh reads that document a second time for them — failing to read it costs the badges, not the catalog.
 - **International-version environments not yet covered**: on Windows / WSL / Linux no reliable source for the international app's version has been located yet, so the saved value or the built-in default is used. On macOS, real-shim checks covered complete GPT-family replies, tool calls, and continued turns.
 - **Behaviour change with no credentials**: a version whose app was never signed in — and that left no plugin-owned copy — no longer shows a model group. The CN version used to display a built-in fallback list, but every model on it failed when selected.
+- **A newer app's encrypted credential file cannot be unwrapped yet (but is reported as such)**: from WorkBuddy 5.6 the desktop app writes `accessToken`, `refreshToken` and similar fields as `{"$wbEncrypted":1,"envelope":"…"}` envelopes whose key lives in the app, so the plugin cannot unwrap them. The card and `status` / `doctor` then say that a credential file *was* found and that it is written in a newer app's format, and `doctor` additionally reports `desktopAuthFile.format` (`plaintext` / `encrypted` / `unrecognized` / `absent`) instead of degrading to a bare "not signed in". A plugin-owned credential copy keeps working regardless, so an app upgrade does not end an established session. The plaintext format of 5.5.6 and earlier is unaffected.
 - **The enterprise credit path currently covers the CN product only**: the international enterprise billing interface is unverified, so those accounts still read through the personal endpoint pending measurement. The enterprise branch could not be tested locally (the development machine holds a personal account); it was implemented from the official app's interface contract, and reports from enterprise users are welcome.
 - Relies on WorkBuddy client interfaces (not a public API); the plugin may need updates as WorkBuddy changes.
 
