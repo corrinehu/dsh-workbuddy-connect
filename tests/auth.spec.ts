@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultDesktopAuthCandidates,
+  inspectWorkBuddyAuth,
   parseWorkBuddyAuth,
   WorkBuddyCredentialStore,
   WORKBUDDY_AUTH_FILE_ENV,
@@ -71,6 +72,172 @@ describe('parseWorkBuddyAuth', () => {
     expect(parseWorkBuddyAuth('{}')).toBeUndefined()
     expect(parseWorkBuddyAuth('not json')).toBeUndefined()
     expect(parseWorkBuddyAuth(JSON.stringify({ auth: { refreshToken: 'rt' } }))).toBeUndefined()
+  })
+
+  it('reports the credential it read when a document is inspectable', () => {
+    expect(inspectWorkBuddyAuth(nestedDoc(1_792_128_236_868))).toMatchObject({ credential: { accessToken: 'at' } })
+  })
+
+  it('still reads a plaintext token from a document that also carries an envelope', () => {
+    // The compatibility branch: an app that encrypts only some fields, or a
+    // transitional build writing both shapes, must keep working exactly as
+    // before — a plaintext string token always wins over an envelope.
+    const document = JSON.stringify({
+      auth: {
+        accessToken: 'at',
+        refreshToken: { $wbEncrypted: 1, envelope: 'eyJzdWl0ZQ' },
+        expiresAt: 1_792_128_236_868,
+        domain: 'www.codebuddy.cn',
+      },
+      account: { uid: 'uid-1' },
+    })
+    expect(parseWorkBuddyAuth(document)?.accessToken).toBe('at')
+    expect(inspectWorkBuddyAuth(document).encrypted).toBeUndefined()
+  })
+})
+
+/**
+ * The shape WorkBuddy 5.6.0 writes: the token fields and the account's own
+ * details are `{"$wbEncrypted":1,"envelope":"…"}` objects instead of strings.
+ * The envelope itself is the App's own key material, so it is opaque here —
+ * what matters is that the *marker* is recognized, because that is what makes
+ * "the file is newer than the plugin" different from "nobody signed in".
+ * The envelope payload below is a placeholder, never real token material.
+ */
+function encryptedDoc(): string {
+  return JSON.stringify({
+    auth: {
+      accessToken: { $wbEncrypted: 1, envelope: 'eyJzdWl0ZQ' },
+      refreshToken: { $wbEncrypted: 1, envelope: 'eyJzdWl0ZQ' },
+      expiresIn: 2592000,
+      refreshExpiresIn: 5183999,
+      tokenType: 'Bearer',
+      expiresAt: 1_792_437_609_407,
+      refreshExpiresAt: 1_795_029_608_407,
+      lastRefreshTime: 1_789_845_610_069,
+    },
+    account: {
+      uid: 'uid-1',
+      nickname: { $wbEncrypted: 1, envelope: 'eyJzdWl0ZQ' },
+    },
+  })
+}
+
+const ENCRYPTED_FIELDS = ['accessToken', 'refreshToken', 'nickname']
+
+describe('encrypted desktop credentials (WorkBuddy 5.6+)', () => {
+  it('names the format instead of yielding a credential', () => {
+    const document = encryptedDoc()
+    expect(parseWorkBuddyAuth(document)).toBeUndefined()
+    expect(inspectWorkBuddyAuth(document)).toEqual({ encrypted: { marker: 1, fields: ENCRYPTED_FIELDS } })
+  })
+
+  it('does not mistake a flat encrypted document for a missing one', () => {
+    const flat = JSON.stringify({
+      accessToken: { $wbEncrypted: 1, envelope: 'eyJzdWl0ZQ' },
+      refreshToken: { $wbEncrypted: 1, envelope: 'eyJzdWl0ZQ' },
+      expiresAt: 1_792_437_609_407,
+    })
+    // Field names are listed once even though the flat form feeds the same
+    // object in as both the auth and the identity record.
+    expect(inspectWorkBuddyAuth(flat)).toEqual({
+      encrypted: { marker: 1, fields: ['accessToken', 'refreshToken'] },
+    })
+  })
+
+  /** A temp directory registered for cleanup, like the other cases here. */
+  async function tempDir(prefix: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), prefix))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    return dir
+  }
+
+  it('reports signed-out with the file and the format (not as a fresh install)', async () => {
+    const dir = await tempDir('wb-enc-')
+    const desktop = join(dir, 'workbuddy-desktop.info')
+    await writeFile(desktop, encryptedDoc())
+    const store = new WorkBuddyCredentialStore({
+      desktopPath: desktop,
+      ownPath: join(dir, 'own.json'),
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+
+    const status = await store.status()
+    expect(status.state).toBe('signed-out')
+    // What this test exists for: the diagnosis names the file and the format,
+    // and never tells the user to sign in again — which would rewrite the same
+    // unreadable file and look like the plugin ignoring a successful sign-in.
+    expect(status.reason).toContain(desktop)
+    expect(status.reason).toContain('$wbEncrypted=1')
+    expect(status.reason).toContain('accessToken')
+    expect(status.reason).toContain('update dsh-workbuddy-connect')
+
+    await expect(store.resolve()).rejects.toThrow(/no signed-in WorkBuddy account/)
+    await expect(store.resolve()).rejects.toThrow(/encrypted format this plugin version cannot read/)
+    await expect(store.inspectDesktopAuthFile()).resolves.toEqual({
+      format: 'encrypted',
+      path: desktop,
+      encrypted: { path: desktop, format: { marker: 1, fields: ENCRYPTED_FIELDS } },
+    })
+  })
+
+  it('keeps serving the plugin-owned copy when the desktop file turns encrypted', async () => {
+    // An app changing its storage format must not end a session this plugin
+    // refreshed itself: the owned copy is the plugin's own file, and the
+    // unreadable desktop document is only the app's.
+    const dir = await tempDir('wb-enc-own-')
+    const desktop = join(dir, 'workbuddy-desktop.info')
+    const own = join(dir, 'own.json')
+    await writeFile(desktop, encryptedDoc())
+    await writeFile(own, JSON.stringify({
+      version: 1,
+      credential: {
+        accessToken: 'own-at',
+        refreshToken: 'own-rt',
+        expiresAtMs: Date.now() + 3600_000,
+        domain: 'www.codebuddy.cn',
+        uid: 'uid-1',
+        source: 'dsh',
+      },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      desktopPath: desktop,
+      ownPath: own,
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    await expect(store.resolve()).resolves.toMatchObject({ accessToken: 'own-at', source: 'dsh' })
+    await expect(store.status()).resolves.toMatchObject({ state: 'signed-in' })
+  })
+})
+
+describe('desktop auth file format report', () => {
+  it('classifies the long-standing plaintext file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-format-'))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    const desktop = join(dir, 'workbuddy-desktop.info')
+    await writeFile(desktop, nestedDoc(Date.now() + 3600_000))
+    const store = new WorkBuddyCredentialStore({
+      desktopPath: desktop,
+      ownPath: join(dir, 'own.json'),
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    await expect(store.inspectDesktopAuthFile()).resolves.toEqual({ format: 'plaintext', path: desktop })
+  })
+
+  it('tells a present but tokenless file apart from an absent one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-format-'))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    const desktop = join(dir, 'workbuddy-desktop.info')
+    const store = new WorkBuddyCredentialStore({
+      desktopPath: desktop,
+      ownPath: join(dir, 'own.json'),
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    await expect(store.inspectDesktopAuthFile()).resolves.toEqual({ format: 'absent' })
+    await expect(store.desktopFilePresent()).resolves.toBe(false)
+    await writeFile(desktop, '{"auth":{}}')
+    await expect(store.inspectDesktopAuthFile()).resolves.toEqual({ format: 'unrecognized', path: desktop })
+    await expect(store.status()).resolves.toEqual({ state: 'signed-out' })
   })
 })
 

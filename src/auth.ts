@@ -41,7 +41,8 @@ export interface WorkBuddyAuthStatus {
   source?: 'desktop' | 'dsh'
   /**
    * Why no credential is usable, when the reason is diagnosable rather than
-   * "nobody is signed in" — a region mismatch being the case that matters.
+   * "nobody is signed in" — a credential belonging to the other product, or a
+   * desktop file written in a newer, encrypted format this build cannot read.
    * Present only on `signed-out`, and never a substitute for fixing the file.
    */
   reason?: string
@@ -164,33 +165,112 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
+/** Whether a value is a mutable record (not null, not an array). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 /**
- * Parse a WorkBuddy auth document in either on-disk shape: the plugin OAuth
- * nested form `{"auth":{...},"account":{...}}` and the flat panel form.
- * Returns undefined when the document carries no access token.
+ * The key a newer desktop app wraps its sensitive fields in.
+ *
+ * WorkBuddy 5.6.0 writes `accessToken`, `refreshToken`, and the account's own
+ * details as `{"$wbEncrypted":1,"envelope":"<base64>"}` instead of plain
+ * strings. The envelope's key belongs to the desktop app, so the payload is
+ * opaque to this plugin — but the *presence* of the marker is not, and that is
+ * what makes "the file is newer than the plugin" distinguishable from "nobody
+ * is signed in".
  */
-export function parseWorkBuddyAuth(text: string): WorkBuddyCredential | undefined {
+export const WORKBUDDY_ENCRYPTED_MARKER = '$wbEncrypted'
+
+/** What an encrypted desktop field looks like, as far as this build can tell. */
+export interface WorkBuddyEncryptedFormat {
+  /**
+   * The marker's own value — `1` in the observed 5.6.0 file — treated as the
+   * envelope format's version, since it is the only thing about the envelope
+   * that is readable at all.
+   */
+  marker: number
+  /** Which fields arrived enveloped: field *names* only, never token material. */
+  fields: readonly string[]
+}
+
+/** A desktop auth file that exists but is written in that encrypted format. */
+export interface WorkBuddyEncryptedAuthFile {
+  /** The file that carried the envelope, for a message that names it. */
+  path: string
+  format: WorkBuddyEncryptedFormat
+}
+
+/** Outcome of reading one desktop auth document. */
+export interface WorkBuddyAuthInspection {
+  /** The credential the document carried, when it is one this build can read. */
+  credential?: WorkBuddyCredential
+  /**
+   * Set when the document is a newer, encrypted one whose tokens cannot be
+   * unwrapped: the file was found and is valid JSON, its sign-in is simply
+   * opaque. Never set together with {@link credential} — a plaintext token
+   * always wins, so an app that writes both (or a transitional build that
+   * encrypts only one field) keeps working exactly as before.
+   */
+  encrypted?: WorkBuddyEncryptedFormat
+}
+
+/** The marker value of an envelope object; undefined for every other value. */
+function envelopeMarker(value: unknown): number | undefined {
+  if (!isRecord(value)) return undefined
+  const marker = value[WORKBUDDY_ENCRYPTED_MARKER]
+  return typeof marker === 'number' && Number.isFinite(marker) ? marker : undefined
+}
+
+/** Collect every enveloped field a document declares, identity fields included. */
+function collectEnvelopes(...records: readonly Record<string, unknown>[]): WorkBuddyEncryptedFormat | undefined {
+  const fields: string[] = []
+  let marker: number | undefined
+  for (const record of records) {
+    for (const [field, value] of Object.entries(record)) {
+      const found = envelopeMarker(value)
+      if (found === undefined || fields.includes(field)) continue
+      marker ??= found
+      fields.push(field)
+    }
+  }
+  return marker === undefined ? undefined : { marker, fields }
+}
+
+/**
+ * Read a WorkBuddy auth document in either *plaintext* on-disk shape — the
+ * plugin OAuth nested form `{"auth":{...},"account":{...}}` and the flat panel
+ * form — and report the encrypted shape when that is what the file is.
+ *
+ * The plaintext branch is checked first and unconditionally: every desktop app
+ * up to 5.5.6 writes a string token, and that must keep parsing exactly as it
+ * always has. Only when a document carries *no* plaintext access token is an
+ * envelope looked for — the case that used to be indistinguishable from an
+ * empty file.
+ */
+export function inspectWorkBuddyAuth(text: string): WorkBuddyAuthInspection {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
-    return undefined
+    return {}
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const document = parsed as Record<string, unknown>
+  if (!isRecord(parsed)) return {}
+  const document = parsed
   let auth: Record<string, unknown>
   let identity: Record<string, unknown>
-  if (typeof document['auth'] === 'object' && document['auth'] !== null) {
-    auth = document['auth'] as Record<string, unknown>
-    identity = typeof document['account'] === 'object' && document['account'] !== null
-      ? document['account'] as Record<string, unknown>
-      : {}
+  if (isRecord(document['auth'])) {
+    auth = document['auth']
+    identity = isRecord(document['account']) ? document['account'] : {}
   } else {
     auth = document
     identity = document
   }
   const accessToken = typeof auth['accessToken'] === 'string' ? auth['accessToken'] : ''
-  if (accessToken === '') return undefined
+  if (accessToken === '') {
+    const encrypted = collectEnvelopes(auth, identity)
+    return encrypted === undefined ? {} : { encrypted }
+  }
   const expiresAtMs = typeof auth['expiresAt'] === 'number' ? expiryToMs(auth['expiresAt']) : 0
   const refreshExpiresAtMs = typeof auth['refreshExpiresAt'] === 'number' ? expiryToMs(auth['refreshExpiresAt']) : undefined
   const enterpriseId = optionalString(identity['enterpriseId'])
@@ -206,7 +286,60 @@ export function parseWorkBuddyAuth(text: string): WorkBuddyCredential | undefine
     ...nickname === undefined ? {} : { nickname },
     source: 'desktop',
   }
-  return credential
+  return { credential }
+}
+
+/**
+ * Parse a WorkBuddy auth document into a credential.
+ *
+ * Kept as the compatibility surface for callers that only want the token; it
+ * cannot say *why* a document yielded nothing. Use
+ * {@link inspectWorkBuddyAuth} when that distinction matters — a newer desktop
+ * app's encrypted document parses to `undefined` here exactly like an empty
+ * one, which is how "the file is present and unreadable" used to be reported as
+ * "nobody is signed in".
+ */
+export function parseWorkBuddyAuth(text: string): WorkBuddyCredential | undefined {
+  return inspectWorkBuddyAuth(text).credential
+}
+
+/**
+ * Classify the desktop auth file's first present candidate.
+ *
+ * `absent` and `encrypted` are the pair the card and `doctor` have to tell
+ * apart: a sign-out caused by a missing file is the user's to fix, while one
+ * caused by a format this build does not read is the plugin's.
+ */
+export type WorkBuddyDesktopAuthFormat = 'plaintext' | 'encrypted' | 'unrecognized' | 'absent'
+
+/** One read of the desktop auth file, for diagnostics. */
+export interface WorkBuddyDesktopAuthReport {
+  format: WorkBuddyDesktopAuthFormat
+  /** Where the verdict came from; absent only when no candidate exists. */
+  path?: string
+  /**
+   * Set when `format` is `encrypted`, ready to hand to
+   * {@link encryptedDesktopAuthReason}. `doctor` reuses the builder rather than
+   * writing its own sentence, so every surface explains the file the same way.
+   */
+  encrypted?: WorkBuddyEncryptedAuthFile
+}
+
+/**
+ * Explain a desktop auth file whose tokens this build cannot read.
+ *
+ * One sentence shared by {@link WorkBuddyCredentialStore.status}'s `reason`
+ * (which the card renders verbatim), the store's `resolve()` error, and
+ * `doctor`. It deliberately leads with what was *found*, because the generic
+ * hint it replaces — "sign in once in the desktop app" — sends the user to
+ * re-sign-in, which rewrites the very file that cannot be read, instead of
+ * pointing at the version gap.
+ */
+export function encryptedDesktopAuthReason(appName: string, file: WorkBuddyEncryptedAuthFile): string {
+  return `${appName} desktop auth file at ${file.path} is written in an encrypted format this plugin version cannot read`
+    + ` (${WORKBUDDY_ENCRYPTED_MARKER}=${file.format.marker}, encrypted fields: ${file.format.fields.join(', ')});`
+    + ` the ${appName} desktop app that wrote it is newer than this plugin — update dsh-workbuddy-connect to read it`
+    + ` (signing in again rewrites the same file and will not help)`
 }
 
 /** Serialize the plugin-owned copy. */
@@ -254,6 +387,24 @@ function parseOwnDocument(text: string): WorkBuddyCredential | undefined {
 /** Whether a filesystem error reports an absent path. */
 function isENOENT(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
+}
+
+/** What the desktop slot had to say on one read. */
+interface DesktopSlotRead {
+  credential?: WorkBuddyCredential
+  /** A found file whose tokens the desktop app encrypted — a newer app version. */
+  encrypted?: WorkBuddyEncryptedAuthFile
+}
+
+/** What both storage slots had to say on one read. */
+interface CredentialRead {
+  /** The credential to serve; absent when neither slot has a usable one. */
+  credential?: WorkBuddyCredential
+  /**
+   * Why the desktop slot yielded no credential, when the file was there and
+   * the reason is the app's format rather than the user's sign-in state.
+   */
+  encrypted?: WorkBuddyEncryptedAuthFile
 }
 
 /**
@@ -319,14 +470,23 @@ export class WorkBuddyCredentialStore {
 
   /** Read the freshest stored credential without refreshing anything. */
   async current(): Promise<WorkBuddyCredential | undefined> {
+    return (await this.readCredential()).credential
+  }
+
+  /**
+   * Read both slots and pick the credential to serve, keeping the desktop
+   * slot's verdict for the callers that have to *explain* a sign-out.
+   */
+  private async readCredential(): Promise<CredentialRead> {
     const [desktop, own] = await Promise.all([this.readDesktop(), this.readOwn()])
+    const desktopCredential = desktop.credential
     // A credential belonging to the other product is refused rather than used:
     // the two apps share one auth directory and differ only by filename, so a
     // misconfigured `authFile` / env var is a realistic mistake, and sending one
     // region's token to the other's endpoint would leak it across products.
     // Naming the file and the expected region is what makes it fixable.
     if (this.variant !== undefined) {
-      for (const [label, credential] of [['desktop file', desktop], ['plugin copy', own]] as const) {
+      for (const [label, credential] of [['desktop file', desktopCredential], ['plugin copy', own]] as const) {
         if (credential === undefined) continue
         const region = regionOf(credential.domain)
         if (region !== this.variant.region) {
@@ -338,8 +498,15 @@ export class WorkBuddyCredentialStore {
         }
       }
     }
-    if (desktop === undefined) return own
-    if (own === undefined) return desktop
+    // The encrypted verdict rides along even when the plugin-owned copy still
+    // supplies a credential: the caller decides whether it matters, and a
+    // surviving copy must keep working — one app changing its storage format is
+    // not a reason to drop a session this plugin refreshed itself.
+    const encrypted = desktop.encrypted === undefined ? {} : { encrypted: desktop.encrypted }
+    if (desktopCredential === undefined) {
+      return own === undefined ? encrypted : { credential: own, ...encrypted }
+    }
+    if (own === undefined) return { credential: desktopCredential }
     // Identity beats expiry. The plugin's own copy is written by its own
     // refreshes, so after the user switches accounts in the desktop app the copy
     // still belongs to the *previous* account — and may well expire later,
@@ -347,8 +514,10 @@ export class WorkBuddyCredentialStore {
     // account's uid in `X-User-Id` and answer as the wrong user. The desktop
     // file is the authority on who is signed in now; a differing identity means
     // the copy is stale regardless of its timestamp.
-    if (desktop.uid !== own.uid || desktop.enterpriseId !== own.enterpriseId) return desktop
-    return own.expiresAtMs > desktop.expiresAtMs ? own : desktop
+    if (desktopCredential.uid !== own.uid || desktopCredential.enterpriseId !== own.enterpriseId) {
+      return { credential: desktopCredential }
+    }
+    return { credential: own.expiresAtMs > desktopCredential.expiresAtMs ? own : desktopCredential }
   }
 
   /**
@@ -356,14 +525,19 @@ export class WorkBuddyCredentialStore {
    * Single-flight, so parallel requests share one refresh.
    */
   async resolve(): Promise<WorkBuddyCredential> {
-    const credential = await this.current()
+    const read = await this.readCredential()
+    const credential = read.credential
     if (credential === undefined) {
       const candidates = this.resolveDesktopCandidates()
       const desktop = candidates.length > 0 ? candidates.join(' or ') : '(no desktop path on this platform)'
       const app = this.variant?.appName ?? 'WorkBuddy'
       throw new Error(
         `workbuddy: no signed-in ${app} account found; sign in once in the ${app} desktop app`
-        + ` (expected ${desktop} or ${this.variant?.env ?? WORKBUDDY_AUTH_FILE_ENV}), or refresh an existing session`,
+        + ` (expected ${desktop} or ${this.variant?.env ?? WORKBUDDY_AUTH_FILE_ENV}), or refresh an existing session`
+        // A found-but-encrypted file is appended rather than replacing the hint:
+        // the hint is still true, but on its own it is the advice that sends the
+        // user to re-sign-in and rewrite the unreadable file.
+        + (read.encrypted === undefined ? '' : ` — ${encryptedDesktopAuthReason(app, read.encrypted)}`),
       )
     }
     if (!this.needsRefresh(credential)) return credential
@@ -377,8 +551,20 @@ export class WorkBuddyCredentialStore {
   /** Read-only sign-in summary; never refreshes and never throws. */
   async status(): Promise<WorkBuddyAuthStatus> {
     try {
-      const credential = await this.current()
-      if (credential === undefined) return { state: 'signed-out' }
+      const read = await this.readCredential()
+      const credential = read.credential
+      if (credential === undefined) {
+        return {
+          state: 'signed-out',
+          // Only the encrypted case earns a reason. It is the one where the file
+          // was found and the *plugin* is behind, so "sign in once" is wrong
+          // advice; a document that is merely empty or garbled stays a silent
+          // sign-out, and `doctor` reports its format for that diagnosis.
+          ...read.encrypted === undefined
+            ? {}
+            : { reason: encryptedDesktopAuthReason(this.variant?.appName ?? 'WorkBuddy', read.encrypted) },
+        }
+      }
       return {
         state: 'signed-in',
         expiresAtMs: credential.expiresAtMs,
@@ -451,15 +637,24 @@ export class WorkBuddyCredentialStore {
    * but unparsable is authoritative for its slot, so a stale older-version
    * file never silently wins over a broken newer one.
    */
-  private async readDesktop(): Promise<WorkBuddyCredential | undefined> {
+  private async readDesktop(): Promise<DesktopSlotRead> {
     for (const desktopPath of this.resolveDesktopCandidates()) {
+      let text: string
       try {
-        return parseWorkBuddyAuth(await readFile(desktopPath, 'utf8'))
+        text = await readFile(desktopPath, 'utf8')
       } catch (error: unknown) {
         if (!isENOENT(error)) throw error
+        continue
       }
+      // A found file ends the probe either way: a credential, a newer app's
+      // encrypted document (named, because it is the reason there is none), or
+      // a document that simply carries no token.
+      const inspection = inspectWorkBuddyAuth(text)
+      if (inspection.credential !== undefined) return { credential: inspection.credential }
+      if (inspection.encrypted !== undefined) return { encrypted: { path: desktopPath, format: inspection.encrypted } }
+      return {}
     }
-    return undefined
+    return {}
   }
 
   private async readOwn(): Promise<WorkBuddyCredential | undefined> {
@@ -481,5 +676,39 @@ export class WorkBuddyCredentialStore {
       }
     }
     return false
+  }
+
+  /**
+   * Classify the desktop auth file's first present candidate.
+   *
+   * Subsumes {@link desktopFilePresent} for `doctor`, which needs the *reason*
+   * a present file yielded nothing — "present" beside "signed-out" is exactly
+   * the pair that made a newer App's format look like a stale path. Reads the
+   * file (the presence question alone is a `stat`), never refreshes, never
+   * throws, and never returns token material.
+   */
+  async inspectDesktopAuthFile(): Promise<WorkBuddyDesktopAuthReport> {
+    for (const desktopPath of this.resolveDesktopCandidates()) {
+      let text: string
+      try {
+        text = await readFile(desktopPath, 'utf8')
+      } catch (error: unknown) {
+        if (isENOENT(error)) continue
+        // Present but unreadable (permissions, a directory): a fact about the
+        // file, and not the same fact as `absent`.
+        return { format: 'unrecognized', path: desktopPath }
+      }
+      const inspection = inspectWorkBuddyAuth(text)
+      if (inspection.credential !== undefined) return { format: 'plaintext', path: desktopPath }
+      if (inspection.encrypted !== undefined) {
+        return {
+          format: 'encrypted',
+          path: desktopPath,
+          encrypted: { path: desktopPath, format: inspection.encrypted },
+        }
+      }
+      return { format: 'unrecognized', path: desktopPath }
+    }
+    return { format: 'absent' }
   }
 }

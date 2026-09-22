@@ -3,7 +3,7 @@
 
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
+import { encryptedDesktopAuthReason, WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -64,7 +64,10 @@ function fallbackCount(variant: WorkBuddyVariant): number {
 async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<number> {
   const store = makeStore(variant)
   const status = await store.status()
-  const desktopPresent = await store.desktopFilePresent()
+  // One read answers both "is it there" and "what is in it". `present` beside
+  // `signed-out` is what made a newer App's encrypted format look like a stale
+  // path or an expired token, so the format is reported next to it.
+  const desktopAuthFile = await store.inspectDesktopAuthFile()
   const heartbeat = await readHostHeartbeat()
   const hostAlive = heartbeat !== undefined && isHeartbeatProcessAlive(heartbeat)
   // Only the international variant needs a UA, and reading it is how `doctor`
@@ -79,7 +82,8 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
     displayName: variant.displayName,
     desktopAuthFile: {
       path: store.desktopAuthPath() ?? `(no platform default; set ${variant.env})`,
-      present: desktopPresent,
+      present: desktopAuthFile.format !== 'absent',
+      format: desktopAuthFile.format,
     },
     ownAuthFile: ownAuthPath(variant),
     ...appVersion === undefined ? {} : {
@@ -96,10 +100,21 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
       processAlive: hostAlive,
     },
     signIn: status.state,
+    ...status.reason === undefined ? {} : { signInReason: status.reason },
     fallbackModels: fallbackCount(variant),
     hints: [
-      ...status.state === 'signed-in' ? [] : [`Sign in once in the ${variant.appName} desktop app, then run status again.`],
-      ...desktopPresent ? [] : [`No ${variant.appName} desktop auth file at the expected path; set ${variant.env} if it lives elsewhere.`],
+      // The generic "sign in once" hint is dropped when a credential file was
+      // found and rejected for its format: signing in again rewrites the same
+      // unreadable file, so the format hint below says the useful thing.
+      ...status.state === 'signed-in' || desktopAuthFile.encrypted !== undefined
+        ? []
+        : [`Sign in once in the ${variant.appName} desktop app, then run status again.`],
+      ...desktopAuthFile.encrypted === undefined
+        ? []
+        : [encryptedDesktopAuthReason(variant.appName, desktopAuthFile.encrypted)],
+      ...desktopAuthFile.format !== 'absent'
+        ? []
+        : [`No ${variant.appName} desktop auth file at the expected path; set ${variant.env} if it lives elsewhere.`],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and provider are unavailable until DSH starts the plugin.'],
     ],
   }
@@ -108,7 +123,7 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   } else {
     process.stdout.write([
       `${variant.displayName} Connect ${WORKBUDDY_CONNECT_VERSION} on ${process.version}`,
-      `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
+      `Desktop auth file: ${desktopAuthFile.format === 'absent' ? 'missing' : `present, ${desktopAuthFile.format}`} (${report.desktopAuthFile.path})`,
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       `Sign-in state: ${report.signIn}`,
       `Static fallback models: ${report.fallbackModels}`,
@@ -117,7 +132,7 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
       '',
     ].join('\n'))
   }
-  return status.state === 'signed-in' && desktopPresent ? 0 : 1
+  return status.state === 'signed-in' && desktopAuthFile.format !== 'absent' ? 0 : 1
 }
 
 async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<number> {
@@ -128,10 +143,23 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   const hostAlive = heartbeat !== undefined && isHeartbeatProcessAlive(heartbeat)
   const hostState = hostAlive ? 'running' : heartbeat !== undefined ? 'stale' : 'not-started'
   if (authStatus.state !== 'signed-in') {
+    // The reason travels with the signed-out answer, not only with `doctor`:
+    // "no credential file" and "a credential file this build cannot read" are
+    // different problems, and the CLI is where a user looks first.
     if (jsonOutput) {
-      printJson({ schemaVersion: JSON_SCHEMA_VERSION, package: 'dsh-workbuddy-connect', version: WORKBUDDY_CONNECT_VERSION, provider: variant.id, status: 'signed-out', hostBundle: hostState })
+      printJson({
+        schemaVersion: JSON_SCHEMA_VERSION,
+        package: 'dsh-workbuddy-connect',
+        version: WORKBUDDY_CONNECT_VERSION,
+        provider: variant.id,
+        status: 'signed-out',
+        ...authStatus.reason === undefined ? {} : { reason: authStatus.reason },
+        hostBundle: hostState,
+      })
     } else {
-      process.stdout.write(`${variant.displayName} Connect: signed out\nHost bundle: ${hostState}\n`)
+      process.stdout.write(`${variant.displayName} Connect: signed out\n`
+        + `${authStatus.reason === undefined ? '' : `Reason: ${authStatus.reason}\n`}`
+        + `Host bundle: ${hostState}\n`)
     }
     return 1
   }

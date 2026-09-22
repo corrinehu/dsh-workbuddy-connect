@@ -601,7 +601,8 @@ interface WorkBuddyAuthStatus {
   source?: 'desktop' | 'dsh';
   /**
    * Why no credential is usable, when the reason is diagnosable rather than
-   * "nobody is signed in" — a region mismatch being the case that matters.
+   * "nobody is signed in" — a credential belonging to the other product, or a
+   * desktop file written in a newer, encrypted format this build cannot read.
    * Present only on `signed-out`, and never a substitute for fixing the file.
    */
   reason?: string;
@@ -643,11 +644,100 @@ declare function desktopAuthCandidatesFor(variant: WorkBuddyVariant): string[];
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
 declare function defaultDesktopAuthPath(variant?: WorkBuddyVariant): string | undefined;
 /**
- * Parse a WorkBuddy auth document in either on-disk shape: the plugin OAuth
- * nested form `{"auth":{...},"account":{...}}` and the flat panel form.
- * Returns undefined when the document carries no access token.
+ * The key a newer desktop app wraps its sensitive fields in.
+ *
+ * WorkBuddy 5.6.0 writes `accessToken`, `refreshToken`, and the account's own
+ * details as `{"$wbEncrypted":1,"envelope":"<base64>"}` instead of plain
+ * strings. The envelope's key belongs to the desktop app, so the payload is
+ * opaque to this plugin — but the *presence* of the marker is not, and that is
+ * what makes "the file is newer than the plugin" distinguishable from "nobody
+ * is signed in".
+ */
+declare const WORKBUDDY_ENCRYPTED_MARKER = "$wbEncrypted";
+/** What an encrypted desktop field looks like, as far as this build can tell. */
+interface WorkBuddyEncryptedFormat {
+  /**
+   * The marker's own value — `1` in the observed 5.6.0 file — treated as the
+   * envelope format's version, since it is the only thing about the envelope
+   * that is readable at all.
+   */
+  marker: number;
+  /** Which fields arrived enveloped: field *names* only, never token material. */
+  fields: readonly string[];
+}
+/** A desktop auth file that exists but is written in that encrypted format. */
+interface WorkBuddyEncryptedAuthFile {
+  /** The file that carried the envelope, for a message that names it. */
+  path: string;
+  format: WorkBuddyEncryptedFormat;
+}
+/** Outcome of reading one desktop auth document. */
+interface WorkBuddyAuthInspection {
+  /** The credential the document carried, when it is one this build can read. */
+  credential?: WorkBuddyCredential;
+  /**
+   * Set when the document is a newer, encrypted one whose tokens cannot be
+   * unwrapped: the file was found and is valid JSON, its sign-in is simply
+   * opaque. Never set together with {@link credential} — a plaintext token
+   * always wins, so an app that writes both (or a transitional build that
+   * encrypts only one field) keeps working exactly as before.
+   */
+  encrypted?: WorkBuddyEncryptedFormat;
+}
+/**
+ * Read a WorkBuddy auth document in either *plaintext* on-disk shape — the
+ * plugin OAuth nested form `{"auth":{...},"account":{...}}` and the flat panel
+ * form — and report the encrypted shape when that is what the file is.
+ *
+ * The plaintext branch is checked first and unconditionally: every desktop app
+ * up to 5.5.6 writes a string token, and that must keep parsing exactly as it
+ * always has. Only when a document carries *no* plaintext access token is an
+ * envelope looked for — the case that used to be indistinguishable from an
+ * empty file.
+ */
+declare function inspectWorkBuddyAuth(text: string): WorkBuddyAuthInspection;
+/**
+ * Parse a WorkBuddy auth document into a credential.
+ *
+ * Kept as the compatibility surface for callers that only want the token; it
+ * cannot say *why* a document yielded nothing. Use
+ * {@link inspectWorkBuddyAuth} when that distinction matters — a newer desktop
+ * app's encrypted document parses to `undefined` here exactly like an empty
+ * one, which is how "the file is present and unreadable" used to be reported as
+ * "nobody is signed in".
  */
 declare function parseWorkBuddyAuth(text: string): WorkBuddyCredential | undefined;
+/**
+ * Classify the desktop auth file's first present candidate.
+ *
+ * `absent` and `encrypted` are the pair the card and `doctor` have to tell
+ * apart: a sign-out caused by a missing file is the user's to fix, while one
+ * caused by a format this build does not read is the plugin's.
+ */
+type WorkBuddyDesktopAuthFormat = 'plaintext' | 'encrypted' | 'unrecognized' | 'absent';
+/** One read of the desktop auth file, for diagnostics. */
+interface WorkBuddyDesktopAuthReport {
+  format: WorkBuddyDesktopAuthFormat;
+  /** Where the verdict came from; absent only when no candidate exists. */
+  path?: string;
+  /**
+   * Set when `format` is `encrypted`, ready to hand to
+   * {@link encryptedDesktopAuthReason}. `doctor` reuses the builder rather than
+   * writing its own sentence, so every surface explains the file the same way.
+   */
+  encrypted?: WorkBuddyEncryptedAuthFile;
+}
+/**
+ * Explain a desktop auth file whose tokens this build cannot read.
+ *
+ * One sentence shared by {@link WorkBuddyCredentialStore.status}'s `reason`
+ * (which the card renders verbatim), the store's `resolve()` error, and
+ * `doctor`. It deliberately leads with what was *found*, because the generic
+ * hint it replaces — "sign in once in the desktop app" — sends the user to
+ * re-sign-in, which rewrites the very file that cannot be read, instead of
+ * pointing at the version gap.
+ */
+declare function encryptedDesktopAuthReason(appName: string, file: WorkBuddyEncryptedAuthFile): string;
 /**
  * Read-only credential store with demand-driven refresh.
  *
@@ -683,6 +773,11 @@ declare class WorkBuddyCredentialStore {
   /** Read the freshest stored credential without refreshing anything. */
   current(): Promise<WorkBuddyCredential | undefined>;
   /**
+   * Read both slots and pick the credential to serve, keeping the desktop
+   * slot's verdict for the callers that have to *explain* a sign-out.
+   */
+  private readCredential;
+  /**
    * The credential to send upstream: {@link current}, refreshed on demand.
    * Single-flight, so parallel requests share one refresh.
    */
@@ -704,6 +799,16 @@ declare class WorkBuddyCredentialStore {
   private readOwn;
   /** Whether any desktop-file candidate exists as a regular file; diagnostics only. */
   desktopFilePresent(): Promise<boolean>;
+  /**
+   * Classify the desktop auth file's first present candidate.
+   *
+   * Subsumes {@link desktopFilePresent} for `doctor`, which needs the *reason*
+   * a present file yielded nothing — "present" beside "signed-out" is exactly
+   * the pair that made a newer App's format look like a stale path. Reads the
+   * file (the presence question alone is a `stat`), never refreshes, never
+   * throws, and never returns token material.
+   */
+  inspectDesktopAuthFile(): Promise<WorkBuddyDesktopAuthReport>;
 }
 //#endregion
 //#region src/catalog.d.ts
@@ -1207,4 +1312,4 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_ENTRY_ID, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, desktopAuthCandidatesFor, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, resolveAppVersion, resolveChatIdentity, validAppVersion, validCliVersion, variantFor, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath };
+export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_ENCRYPTED_MARKER, WORKBUDDY_ENTRY_ID, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthInspection, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyDesktopAuthFormat, type WorkBuddyDesktopAuthReport, type WorkBuddyEffort, type WorkBuddyEncryptedAuthFile, type WorkBuddyEncryptedFormat, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, desktopAuthCandidatesFor, encryptedDesktopAuthReason, fallbackChatIdentity, fingerprintModel, inject, inspectWorkBuddyAuth, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, resolveAppVersion, resolveChatIdentity, validAppVersion, validCliVersion, variantFor, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath };
