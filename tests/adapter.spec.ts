@@ -8,7 +8,10 @@ import type { WorkBuddyShim } from '../src/shim.ts'
 /** The pi-ai collection built by an adapter exposes the exact model descriptor it consumes. */
 interface AdapterSnapshot {
   models: {
-    getModel(provider: string, model: string): { compat?: { maxTokensField?: string } } | undefined
+    getModel(provider: string, model: string): {
+      compat?: { maxTokensField?: string }
+      thinkingLevelMap?: Partial<Record<string, string | null>>
+    } | undefined
   }
 }
 
@@ -33,6 +36,50 @@ describe('WorkBuddy adapter model descriptors', () => {
     // descriptor seam pi-ai reads before it serializes a request.
     const snapshot = (adapter as unknown as { current(): AdapterSnapshot }).current()
     expect(snapshot.models.getModel(WORKBUDDY_PROVIDER, 'model')?.compat?.maxTokensField).toBe('max_tokens')
+  })
+
+  it('keeps the `off` thinking level selectable when thinking can be disabled', () => {
+    // `off` must stay pinned to a string: pi-ai exposes a level only when its
+    // `thinkingLevelMap` entry is a string, and `null` would drop it from the
+    // picker. The wire spelling is then normalized in `prepareChatBody` — see
+    // `dropUnsupportedEffort` and its spec, plus issue #49.
+    const catalog = new WorkBuddyCatalog([{
+      id: 'model', name: 'Model', contextWindow: 1_000, maxTokens: 128_000,
+      supportsImages: false, billing: { free: false },
+      reasoning: { supports: true, onlyReasoning: false, canDisableThinking: true, supportedEfforts: ['low', 'high', 'max'] },
+    }])
+    const { adapter } = createWorkBuddyAdapter({
+      catalog,
+      store: {} as WorkBuddyCredentialStore,
+      shim: {
+        ready: Promise.resolve(),
+        baseUrl: () => 'http://127.0.0.1:1',
+        token: () => 'test-token',
+        close: async () => {},
+      } as WorkBuddyShim,
+    })
+
+    const snapshot = (adapter as unknown as { current(): AdapterSnapshot }).current()
+    const model = snapshot.models.getModel(WORKBUDDY_PROVIDER, 'model')
+    expect(model?.thinkingLevelMap?.off).toBe('off')
+    // A model without the declaration still offers no `off` at all.
+    const bare = new WorkBuddyCatalog([{
+      id: 'bare', name: 'Bare', contextWindow: 1_000, maxTokens: 8_000,
+      supportsImages: false, billing: { free: false },
+      reasoning: { supports: true, onlyReasoning: true, canDisableThinking: false, supportedEfforts: ['high'] },
+    }])
+    const second = createWorkBuddyAdapter({
+      catalog: bare,
+      store: {} as WorkBuddyCredentialStore,
+      shim: {
+        ready: Promise.resolve(),
+        baseUrl: () => 'http://127.0.0.1:1',
+        token: () => 'test-token',
+        close: async () => {},
+      } as WorkBuddyShim,
+    })
+    const bareSnapshot = (second.adapter as unknown as { current(): AdapterSnapshot }).current()
+    expect(bareSnapshot.models.getModel(WORKBUDDY_PROVIDER, 'bare')?.thinkingLevelMap?.off).toBeNull()
   })
 })
 

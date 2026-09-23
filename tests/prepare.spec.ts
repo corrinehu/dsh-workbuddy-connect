@@ -15,6 +15,31 @@ describe('prepareChatBody', () => {
     expect(body['tool_choice']).toBe('auto')
   })
 
+  it('drops the adapter\'s own `off` effort spelling (issue #49)', () => {
+    // pi-ai sends `model.thinkingLevelMap.off` for every request that carries
+    // no explicit level. For models declaring `canDisableThinking` that value
+    // is the literal `'off'`, which the upstream rejects with 400 / 11133 /
+    // `extError.param === 'reasoning.effort'`. Omission is the only spelling
+    // measured good on every such model — including `gpt-6-astra`, which also
+    // rejects a literal `'none'`.
+    const body = JSON.parse(prepareChatBody(JSON.stringify({
+      model: 'gpt-5.6-sol',
+      messages: [],
+      reasoning_effort: 'off',
+    })))
+    expect('reasoning_effort' in body).toBe(false)
+  })
+
+  it('keeps declared effort spellings on the wire untouched', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      const body = JSON.parse(prepareChatBody(JSON.stringify({ messages: [], reasoning_effort: effort })))
+      expect(body['reasoning_effort']).toBe(effort)
+    }
+    // `none` is upstream-accepted on some models, so it is not ours to drop.
+    const none = JSON.parse(prepareChatBody(JSON.stringify({ messages: [], reasoning_effort: 'none' })))
+    expect(none['reasoning_effort']).toBe('none')
+  })
+
   it('flattens named function tool_choice to the function name', () => {
     const body = JSON.parse(prepareChatBody(JSON.stringify({
       tool_choice: { type: 'function', function: { name: 'grep' } },
