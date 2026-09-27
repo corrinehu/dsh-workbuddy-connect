@@ -21,7 +21,7 @@ import { Readable } from 'node:stream'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
-import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { extractDisplayErrorMessage, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -218,11 +218,16 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const result = await client.chatStream(credential, prepared, controller.signal)
 
     if (!result.ok) {
+      const displayMessage = extractDisplayErrorMessage(result.message)
+      const detail = displayMessage ?? result.message.slice(0, 400)
+      const statusNote = (result.status === 401 || result.status === 403) && result.kind !== 'session_dead'
+        ? ''
+        : ` (http ${result.status})`
       writeOpenAIError(
         res,
         KIND_STATUS[result.kind],
         result.kind,
-        `workbuddy upstream ${result.kind} (http ${result.status}): ${result.message.slice(0, 400)}`,
+        `workbuddy upstream ${result.kind}${statusNote}: ${detail}`,
       )
       return
     }

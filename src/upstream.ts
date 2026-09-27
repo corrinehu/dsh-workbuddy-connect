@@ -315,6 +315,36 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   return 'client'
 }
 
+/**
+ * Extract a user-facing error message from an upstream JSON response body.
+ * Prefers WorkBuddy's localized `displayMsg.zh` / `displayMsg.en`, falling back to `msg`.
+ */
+export function extractDisplayErrorMessage(body: string): string | undefined {
+  const trimmed = body.trim()
+  if (!trimmed.startsWith('{')) return undefined
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+    const obj = parsed as Record<string, unknown>
+    const displayMsg = obj['displayMsg']
+    if (typeof displayMsg === 'object' && displayMsg !== null && !Array.isArray(displayMsg)) {
+      const localized = displayMsg as Record<string, unknown>
+      if (typeof localized['zh'] === 'string' && localized['zh'].trim() !== '') {
+        return localized['zh'].trim()
+      }
+      if (typeof localized['en'] === 'string' && localized['en'].trim() !== '') {
+        return localized['en'].trim()
+      }
+    }
+    if (typeof obj['msg'] === 'string' && obj['msg'].trim() !== '') {
+      return obj['msg'].trim()
+    }
+  } catch {
+    // Non-JSON bodies stay undefined
+  }
+  return undefined
+}
+
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */
 export function regionOf(domain: string): WorkBuddyRegion {
   const lowered = domain.trim().toLowerCase()

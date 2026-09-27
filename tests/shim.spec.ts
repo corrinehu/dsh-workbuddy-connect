@@ -310,4 +310,69 @@ describe('WorkBuddy shim', () => {
     expect(res.status).toBe(401)
     expect(harness.upstreamBodies).toHaveLength(0)
   })
+
+  it('extracts displayMsg from structured JSON error bodies without bare 403', async () => {
+    const harness = await startShim(() => ({
+      ok: false,
+      status: 403,
+      kind: 'client',
+      message: JSON.stringify({
+        code: 11140,
+        msg: 'request illegal',
+        displayMsg: {
+          zh: '内容未通过安全审核，请调整后重试。',
+          en: 'The content did not pass the safety review. Please adjust and retry.',
+        },
+      }),
+    }))
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
+    })
+    expect(response.status).toBe(400)
+    const body = await response.json() as { error: { type: string, message: string } }
+    expect(body.error.type).toBe('client')
+    expect(body.error.message).toBe('workbuddy upstream client: 内容未通过安全审核，请调整后重试。')
+    expect(body.error.message).not.toContain('403')
+  })
+
+  it('falls back to msg when displayMsg is absent and keeps status for non-401/403', async () => {
+    const harness = await startShim(() => ({
+      ok: false,
+      status: 400,
+      kind: 'client',
+      message: JSON.stringify({
+        code: 11128,
+        msg: 'Illegal API invocation from an unapproved channel',
+      }),
+    }))
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
+    })
+    expect(response.status).toBe(400)
+    const body = await response.json() as { error: { type: string, message: string } }
+    expect(body.error.type).toBe('client')
+    expect(body.error.message).toBe('workbuddy upstream client (http 400): Illegal API invocation from an unapproved channel')
+  })
+
+  it('keeps http 401 status note when session is dead', async () => {
+    const harness = await startShim(() => ({
+      ok: false,
+      status: 401,
+      kind: 'session_dead',
+      message: 'Offline user session not found',
+    }))
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
+    })
+    expect(response.status).toBe(401)
+    const body = await response.json() as { error: { type: string, message: string } }
+    expect(body.error.type).toBe('session_dead')
+    expect(body.error.message).toContain('(http 401)')
+  })
 })

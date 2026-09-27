@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
-import { normalizeCredits, parseModelCatalog, WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import { extractDisplayErrorMessage, normalizeCredits, parseModelCatalog, WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 /**
  * Offline unit tests for WorkBuddyUpstreamClient, mocking the global `fetch`
@@ -655,5 +655,44 @@ describe('chatStream wire effort by region (issue #49)', () => {
       expect(await wireEffort(CREDENTIAL, effort)).toBe(effort)
       expect(await wireEffort(AI_CREDENTIAL, effort)).toBe(effort)
     }
+  })
+})
+
+describe('extractDisplayErrorMessage', () => {
+  it('extracts zh displayMsg from structured JSON', () => {
+    const raw = JSON.stringify({
+      code: 11140,
+      msg: 'request illegal',
+      displayMsg: {
+        zh: '内容未通过安全审核，请调整后重试。',
+        en: 'The content did not pass the safety review. Please adjust and retry.',
+      },
+    })
+    expect(extractDisplayErrorMessage(raw)).toBe('内容未通过安全审核，请调整后重试。')
+  })
+
+  it('falls back to en displayMsg when zh is missing', () => {
+    const raw = JSON.stringify({
+      code: 11140,
+      msg: 'request illegal',
+      displayMsg: {
+        en: 'The content did not pass the safety review. Please adjust and retry.',
+      },
+    })
+    expect(extractDisplayErrorMessage(raw)).toBe('The content did not pass the safety review. Please adjust and retry.')
+  })
+
+  it('falls back to msg when displayMsg is absent', () => {
+    const raw = JSON.stringify({
+      code: 11128,
+      msg: 'Illegal API invocation from an unapproved channel',
+    })
+    expect(extractDisplayErrorMessage(raw)).toBe('Illegal API invocation from an unapproved channel')
+  })
+
+  it('returns undefined for non-JSON or malformed bodies', () => {
+    expect(extractDisplayErrorMessage('502 Bad Gateway')).toBeUndefined()
+    expect(extractDisplayErrorMessage('')).toBeUndefined()
+    expect(extractDisplayErrorMessage('{ invalid json')).toBeUndefined()
   })
 })
