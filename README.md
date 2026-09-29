@@ -71,6 +71,7 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 | 插件版本 | 要求的 DSH 核心 | 桌面 App |
 |---|---|---|
 | **0.6.0（双界面自适应）** | `0.1.5-rc.1` / `rc.2` / `rc.3`；`0.1.6-alpha` 系列（含 `alpha.1` / `alpha.2`）与 `0.1.6` 正式版；已实测 `0.1.7-alpha.1`（`0.1.7` 正式版同样在范围内）。**更新的 prerelease（如 `0.1.8-alpha.x`）不自动覆盖**，需插件显式跟进 peer range 后才支持 | `2.0.7`+ 可直接使用；搭载 `0.1.6+` 核心的桌面版发布后同样适用 |
+| **下一个发布**（本 PR 起） | 在 `0.6.0` 的支持面上追加 `0.2.0-rc.1`（`0.1.5` / `0.1.6` / `0.1.7` 支持不变）。已发布的 `0.6.4` 及更早版本不含该区间，在 DSH `0.2.0-rc.1` 上会被宿主整体跳过（见 [#63](https://github.com/corrinehu/dsh-workbuddy-connect/issues/63)） | `2.0.7`+；`0.2.0-rc.1` 桌面版同样适用 |
 | **0.3.2 – 0.5.4**（国际版支持自 `0.5.0`） | `0.1.5-rc.1` 系列（不支持 `0.1.6+`，见 [#41](https://github.com/corrinehu/dsh-workbuddy-connect/issues/41)） | `2.0.7`+（内置核心已跟进 `0.1.5-rc.1`） |
 | **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
 | **0.2.6** | `0.1.1-rc.2`（旧线） | `2.0.3` / `2.0.4` |
@@ -101,7 +102,7 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
   ```
 
 - 自 `0.6.0` 起，Models 设置页不再显示 WorkBuddy / WorkBuddy AI 的不可编辑卡片（两代核心行为一致）；模型选择器、`/model` 与对话调用不受影响。
-- DSH `0.1.5` / `0.1.6` / `0.1.7` 的用户，安装最新版即可：`dsh plugin --profile web add dsh-workbuddy-connect`
+- DSH `0.1.5` / `0.1.6` / `0.1.7` / `0.2.0-rc.1` 的用户，安装最新版即可：`dsh plugin --profile web add dsh-workbuddy-connect`
 - 还在用 DSH `0.1.2-rc.1` 的用户，请停留在 `0.3.1`：`dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - 还在用 DSH `0.1.1-rc.2` 的用户，请停留在 `0.2.6`：`dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
 - 桌面 App 自 `2.0.7` 起内置核心已是 `0.1.5-rc.1`，可直接使用最新版插件；`2.0.5` 及更早的 App（内置 `0.1.2-rc.1`）请继续使用 `0.3.1`
