@@ -45,12 +45,10 @@ describe('WorkBuddy adapter model descriptors', () => {
   it('keeps the `off` thinking level selectable when thinking can be disabled', () => {
     // `off` must stay pinned to a string: pi-ai exposes a level only when its
     // `thinkingLevelMap` entry is a string, and `null` would drop it from the
-    // picker. The wire spelling is handled only in
-    // `prepareInternationalChatBody` (dropped there; the CN variant passes it
-    // through) — see `dropUnsupportedEffort` and its specs, plus issue #49.
-    // Known limitation that stays: selecting Off on the international side
-    // does not guarantee thinking is disabled — the field is omitted and the
-    // upstream decides.
+    // picker. The wire spelling is stripped in *both* regions since #87 — see
+    // `dropUnsupportedEffort` and its specs, plus issues #49 and #87.
+    // Known limitation that stays: selecting Off does not guarantee thinking is
+    // disabled — the field is omitted and the upstream decides.
     const catalog = new WorkBuddyCatalog([{
       id: 'model', name: 'Model', contextWindow: 1_000, maxTokens: 128_000,
       supportsImages: false, billing: { free: false },
@@ -88,6 +86,44 @@ describe('WorkBuddy adapter model descriptors', () => {
     })
     const bareSnapshot = (second.adapter as unknown as { current(): AdapterSnapshot }).current()
     expect(bareSnapshot.models.getModel(WORKBUDDY_PROVIDER, 'bare')?.thinkingLevelMap?.off).toBeNull()
+  })
+
+  it('withholds `off` from a model that declares it can only reason (issue #87)', () => {
+    // The CN catalog ships both flags true on `deepseek-v4.1-flash` and
+    // `kimi-k2.8-preview`, which cannot both hold. The endpoint sides with
+    // `onlyReasoning` (400 / 11150 for every `off` request), so the picker must
+    // not offer a level that is certain to fail.
+    const catalog = new WorkBuddyCatalog([{
+      id: 'only-reasoning',
+      name: 'Only Reasoning',
+      contextWindow: 1_000,
+      maxTokens: 128_000,
+      supportsImages: false,
+      billing: { free: false },
+      reasoning: {
+        supports: true,
+        onlyReasoning: true,
+        canDisableThinking: true,
+        supportedEfforts: ['low', 'high', 'max'],
+      },
+    }])
+    const { adapter } = createWorkBuddyAdapter({
+      catalog,
+      store: {} as WorkBuddyCredentialStore,
+      shim: {
+        ready: Promise.resolve(),
+        baseUrl: () => 'http://127.0.0.1:1',
+        token: () => 'test-token',
+        close: async () => {},
+      } as WorkBuddyShim,
+    })
+    const snapshot = (adapter as unknown as { current(): AdapterSnapshot }).current()
+    const model = snapshot.models.getModel(WORKBUDDY_PROVIDER, 'only-reasoning')
+    // `null` keeps Off out of the picker, while the declared efforts survive.
+    expect(model?.thinkingLevelMap?.off).toBeNull()
+    expect(model?.thinkingLevelMap?.low).toBe('low')
+    expect(model?.thinkingLevelMap?.high).toBe('high')
+    expect(model?.thinkingLevelMap?.max).toBe('max')
   })
 })
 

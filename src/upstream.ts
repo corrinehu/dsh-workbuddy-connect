@@ -628,7 +628,7 @@ export class WorkBuddyUpstreamClient {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
         headers: { ...chatHeaders(credential, userAgent, identity.clientVersion), 'Authorization': `Bearer ${credential.accessToken}` },
-        body: region === 'global' ? prepareInternationalChatBody(bodyJson) : bodyJson,
+        body: region === 'global' ? prepareInternationalChatBody(bodyJson) : prepareCnChatBody(bodyJson),
         ...signal === undefined ? {} : { signal },
       })
     } catch (error: unknown) {
@@ -1279,6 +1279,34 @@ export function modelWithCurrentPromotion(model: WorkBuddyUpstreamModel, now = D
  * JSON object is returned unchanged, exactly as {@link prepareChatBody} does,
  * so this is safe to run over an already-prepared-or-not body.
  */
+/**
+ * Prepare a body for the **CN** endpoint.
+ *
+ * Until #87 the CN wire was the caller's body verbatim. The only difference
+ * now is the shared {@link dropUnsupportedEffort} strip, whose region scope was
+ * lifted once measurements showed this endpoint rejects `off` too.
+ *
+ * Deliberately **not** routed through {@link prepareChatBody}: the shim already
+ * applies it before handing the body to {@link WorkBuddyUpstreamClient.chatStream},
+ * and re-running it would be a second `stream`/`developer`/`tool_choice`
+ * normalisation of an already-normalised body. Only the strip belongs here.
+ *
+ * A body that is not a JSON object is returned unchanged, so this is safe to
+ * run over an already-prepared-or-not body.
+ */
+export function prepareCnChatBody(source: string): string {
+  let body: unknown
+  try {
+    body = JSON.parse(source)
+  } catch {
+    // Not JSON: nothing to strip, and the upstream will reject it anyway.
+    return source
+  }
+  if (!isObject(body)) return source
+  dropUnsupportedEffort(body)
+  return JSON.stringify(body)
+}
+
 export function prepareInternationalChatBody(source: string): string {
   const prepared = prepareChatBody(source)
   let body: unknown
@@ -1289,10 +1317,8 @@ export function prepareInternationalChatBody(source: string): string {
     return prepared
   }
   if (!isObject(body)) return prepared
-  // Region-scoped strip, deliberately *after* the shared `prepareChatBody`:
-  // the CN variant keeps its existing request behaviour — `reasoning_effort`
-  // is passed through verbatim there, including the adapter's own `off`
-  // spelling. See `dropUnsupportedEffort` below for why only this region drops it.
+  // Shared with the CN path since #87: both endpoints reject the adapter's own
+  // `off` spelling, so the strip is no longer region-scoped.
   dropUnsupportedEffort(body)
   const messages = body['messages']
   if (!Array.isArray(messages)) return JSON.stringify(body)
@@ -1304,25 +1330,34 @@ export function prepareInternationalChatBody(source: string): string {
 }
 
 /**
- * Remove the adapter's own `off` effort spelling from the **international** wire.
+ * Remove the adapter's own `off` effort spelling from the wire, on every region.
  *
  * `thinkingLevelMap.off` is pinned to the literal `'off'` for models that
  * declare `canDisableThinking`, so that the level stays selectable. pi-ai
- * sends that value for any request carrying no explicit level, and the
- * international endpoint rejects it on the GPT family with HTTP 400 `11133` /
- * `extError.param === 'reasoning.effort'` (issue #49). Omission is the only
- * form measured good on every such model; a literal `'none'` is *not* a safe
- * substitute — accepted by the GPT-5.6 family and GLM, rejected by
- * `gpt-6-astra`.
+ * sends that value for any request carrying no explicit level — which is why
+ * this covers **Default and Off alike**: the two produce the same body, so a
+ * fix that only removed the menu entry would leave Default failing.
  *
- * Consequences, stated honestly: the international picker still offers Off,
- * but selecting it now means "the field is omitted" — the model's actual
- * behaviour is decided upstream and is *not* guaranteed to disable thinking
- * or to match the catalog's `defaultEffort`. Declared spellings
- * (`low`/`medium`/`high`/`xhigh`/`max`) and an explicit `none` pass through
- * untouched. The CN variant is deliberately unaffected: its endpoint has
- * accepted this spelling in every measurement so far, and keeping its wire
- * unchanged is a scope decision, not a claim about that endpoint's future.
+ * Both endpoints reject it, which is why this is no longer region-scoped
+ * (#87): the international GPT family answers HTTP 400 `11133` /
+ * `extError.param === 'reasoning.effort'` (issue #49), and the CN endpoint
+ * rejects it on models that declare `onlyReasoning` — measured on
+ * `deepseek-v4.1-flash` with 400 / `11150`, while `low`/`high`/`max` pass
+ * (issue #87). Omission is the only form measured good on every such model; a
+ * literal `'none'` is *not* a safe substitute — accepted by the GPT-5.6 family
+ * and GLM, rejected by `gpt-6-astra`.
+ *
+ * Consequences, stated honestly: the picker still offers Off for models where
+ * the upstream declares `canDisableThinking`, but selecting it now means "the
+ * field is omitted" — the model's actual behaviour is decided upstream and is
+ * *not* guaranteed to disable thinking or to match the catalog's
+ * `defaultEffort`. Declared spellings (`low`/`medium`/`high`/`xhigh`/`max`)
+ * and an explicit `none` pass through untouched.
+ *
+ * The CN strip replaces a scope decision whose premise did not hold: the
+ * earlier note here said that endpoint "has accepted this spelling in every
+ * measurement so far". Measurements since (#87) show it rejects `off` on
+ * validating models — the earlier runs had simply not hit one.
  */
 function dropUnsupportedEffort(obj: Record<string, unknown>): void {
   if (obj['reasoning_effort'] === 'off') delete obj['reasoning_effort']

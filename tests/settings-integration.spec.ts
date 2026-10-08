@@ -201,7 +201,9 @@ describe('WorkBuddy Host settings integration', () => {
     const effortOnlyResolved = await ctx.llm.resolveModelInfo('workbuddy', 'hy3')
     expect(effortOnlyResolved.reasoning).toBeUndefined()
     const flashResolved = await ctx.llm.resolveModelInfo('workbuddy', 'glm-5.3-flash')
-    expect(flashResolved.reasoning?.efforts.map(effort => effort.id).sort()).toEqual(['high', 'low', 'max', 'off'])
+    // No `off`: this row declares `onlyReasoning` as well as
+    // `canDisableThinking`, and the endpoint sides with the former (#87).
+    expect(flashResolved.reasoning?.efforts.map(effort => effort.id).sort()).toEqual(['high', 'low', 'max'])
 
     // Image modalities follow the per-model catalog flag (fallback list here):
     // every row of the current CN roster declares image support.

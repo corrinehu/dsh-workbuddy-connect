@@ -159,9 +159,15 @@ describe('probe results merged into the provider', () => {
     // fixture is `glm-5.3-flash`, whose low/high/max declaration is stable.)
     // The invariant under test is that the observation never adds to or
     // replaces the declared set — not which values upstream declares this week.
+    //
+    // `off` is expected only when the row both allows disabling thinking and is
+    // not `onlyReasoning` — the rule `reasoningFields` applies (#87). This
+    // fixture declares both flags true, which is the contradiction #87 reports,
+    // so no Off is offered.
     const info = WorkBuddy.FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5.3-flash')
     const declared = [...(info?.reasoning?.supportedEfforts ?? [])].sort()
-    const expected = info?.reasoning?.canDisableThinking === true ? ['off', ...declared].sort() : declared
+    const offersOff = info?.reasoning?.canDisableThinking === true && info.reasoning.onlyReasoning !== true
+    const expected = offersOff ? ['off', ...declared].sort() : declared
     const efforts = await effortsFor(ctx, 'glm-5.3-flash')
     expect(efforts).toEqual(expected)
     // `medium` was in the fabricated observation's spirit; it appears only if declared.

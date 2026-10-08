@@ -245,7 +245,20 @@ export function reasoningFields(
   }
   const map: Record<ModelThinkingLevel, string | null> = {
     // Probing never grants `off`; only an explicit declaration does.
-    off: reasoning.canDisableThinking === true && declared !== undefined && declared.length > 0 ? 'off' : null,
+    //
+    // `onlyReasoning` vetoes it even when declared (#87). The CN catalog ships
+    // both flags true on `deepseek-v4.1-flash` and `kimi-k2.8-preview`, which
+    // cannot both hold — a model that only ever reasons has no non-thinking
+    // mode to select — and the endpoint sides with `onlyReasoning`, answering
+    // HTTP 400 (「模型不支持该思考强度」) for every `off` request. Offering a
+    // level that is certain to fail is worse than not offering it, so the
+    // contradiction is resolved toward the flag the wire agrees with.
+    //
+    // The request layer strips the spelling too (`dropUnsupportedEffort`), so
+    // this is defence in depth rather than the only guard: a model whose flags
+    // flip between catalog reads still cannot put `off` on the wire.
+    off: reasoning.canDisableThinking === true && reasoning.onlyReasoning !== true
+      && declared !== undefined && declared.length > 0 ? 'off' : null,
     // `minimal` is not in the upstream effort vocabulary (EFFORT_VALUES), so
     // no declared set — and no probe candidate — can ever contain it.
     minimal: null,

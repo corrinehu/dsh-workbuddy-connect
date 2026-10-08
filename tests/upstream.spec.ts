@@ -645,9 +645,30 @@ describe('chatStream wire effort by region (issue #49)', () => {
     return calls[0]?.body === undefined ? undefined : (calls[0].body as Record<string, unknown>)['reasoning_effort']
   }
 
-  it('CN keeps the `off` spelling; international drops it', async () => {
-    expect(await wireEffort(CREDENTIAL, 'off')).toBe('off')
+  it('drops the `off` spelling in both regions (issue #49 for global, #87 for CN)', async () => {
+    // CN used to pass `off` through by an explicit scope decision. #87 measured
+    // that endpoint rejecting it on `deepseek-v4.1-flash` (400 / 11150), which
+    // invalidated the premise, so the strip is no longer region-scoped.
+    expect(await wireEffort(CREDENTIAL, 'off')).toBeUndefined()
     expect(await wireEffort(AI_CREDENTIAL, 'off')).toBeUndefined()
+  })
+
+  it('omits the field entirely for `off` rather than substituting another spelling', async () => {
+    // `none` is the tempting substitute and is *not* safe: accepted by the
+    // GPT-5.6 family and GLM, rejected by `gpt-6-astra` (#49).
+    const captured: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+      captured.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+      return fakeResponse('')
+    }))
+    const result = await new WorkBuddyUpstreamClient().chatStream(CREDENTIAL, JSON.stringify({
+      model: 'probe-model',
+      messages: [{ role: 'system', content: 'You are a helpful assistant.' }, { role: 'user', content: 'hi' }],
+      reasoning_effort: 'off',
+    }))
+    expect(result.ok).toBe(true)
+    expect('reasoning_effort' in (captured[0] ?? {})).toBe(false)
+    expect(captured[0]?.['model']).toBe('probe-model')
   })
 
   it('declared spellings and `none` are untouched in both regions', async () => {
