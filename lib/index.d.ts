@@ -1292,6 +1292,12 @@ declare const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300000;
 interface WorkBuddyAdapterOptions {
   providerId?: string;
   displayName?: string;
+  /**
+   * Which endpoint this adapter serves, from the variant descriptor. Decides
+   * only whether the CN `onlyReasoning` veto hides `off` (#87); defaults to
+   * `'cn'`, the same legacy default `providerId` carries.
+   */
+  region?: WorkBuddyRegion;
   shim: WorkBuddyShim;
   store: WorkBuddyCredentialStore;
   catalog: WorkBuddyCatalog;

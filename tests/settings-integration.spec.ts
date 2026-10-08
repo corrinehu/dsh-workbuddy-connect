@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
 import * as WorkBuddy from '../src/index.ts'
 import { LegacySettingsService } from './helpers/legacy-settings.ts'
 
@@ -205,6 +206,19 @@ describe('WorkBuddy Host settings integration', () => {
     // `canDisableThinking`, and the endpoint sides with the former (#87).
     expect(flashResolved.reasoning?.efforts.map(effort => effort.id).sort()).toEqual(['high', 'low', 'max'])
 
+    // A session saved while `off` was still offered is the compatibility case
+    // (#87). `dsh-llm` validates a requested effort against the `efforts` this
+    // adapter publishes, so hiding Off removes `off` from that list and a
+    // stale selection now fails *before* dispatch rather than as an upstream
+    // 400. Pinned here so the behavior is recorded rather than assumed; see
+    // the review notes for the migration options this leaves open.
+    await expect(ctx.llm.prepareCall({ provider: 'workbuddy', model: 'glm-5.3-flash', reasoningEffort: ReasoningEffortId('off') }))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
+    // The same call with a level the model still declares succeeds, so only
+    // the removed level is affected.
+    await expect(ctx.llm.prepareCall({ provider: 'workbuddy', model: 'glm-5.3-flash', reasoningEffort: ReasoningEffortId('high') }))
+      .resolves.toBeTruthy()
+
     // Image modalities follow the per-model catalog flag (fallback list here):
     // every row of the current CN roster declares image support.
     const modalities = new Map(models.map(model => [model.id, model.inputModalities]))
@@ -339,6 +353,21 @@ describe('WorkBuddy Host settings integration', () => {
     expect(ai).not.toContain('minimax-m3')
     expect(ai).toContain('gpt-5.6-luna')
     expect(cn).not.toContain('gpt-5.6-luna')
+
+    // The #87 `onlyReasoning` veto is scoped to CN, and `gpt-6-astra` carries
+    // the same contradictory pair on both sides' declarations. Asserting the
+    // two providers against the *same* level is what pins `variant.region`
+    // reaching `createWorkBuddyAdapter` (index.ts): a wiring that dropped it,
+    // or passed one region for both, fails one half or the other. Asserting
+    // only the Global half would pass on the CN default.
+    expect((await ctx.llm.resolveModelInfo('workbuddy-ai', 'gpt-6-astra')).reasoning?.efforts.map(effort => effort.id))
+      .toContain('off')
+    await expect(ctx.llm.prepareCall({ provider: 'workbuddy-ai', model: 'gpt-6-astra', reasoningEffort: ReasoningEffortId('off') }))
+      .resolves.toBeTruthy()
+    // And CN still refuses it for its own contradictory row (the assertion the
+    // single-variant case above makes in isolation).
+    await expect(ctx.llm.prepareCall({ provider: 'workbuddy', model: 'glm-5.3-flash', reasoningEffort: ReasoningEffortId('off') }))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
 
     // The preference is on by default: a profile that never touched the setting
     // gets the largest declared window, and an explicit opt-out restores the

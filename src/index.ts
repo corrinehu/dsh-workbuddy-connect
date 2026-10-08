@@ -545,6 +545,10 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
     const workbuddy = createWorkBuddyAdapter({
       providerId: variant.id,
       displayName: variant.displayName,
+      // From the variant descriptor, never inferred: it selects the CN-only
+      // `onlyReasoning` rule that keeps an always-failing `off` out of the
+      // picker (#87).
+      region: variant.region,
       shim,
       store,
       catalog,

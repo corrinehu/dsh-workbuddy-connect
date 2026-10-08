@@ -18,7 +18,7 @@ import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyProbeRecord } from './probe-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
-import { normalizeCredits } from './upstream.ts'
+import { normalizeCredits, type WorkBuddyRegion } from './upstream.ts'
 
 /** Provider route this bundle owns. */
 export const WORKBUDDY_PROVIDER = 'workbuddy'
@@ -160,6 +160,12 @@ function withCatalogDisplay(name: string, info: WorkBuddyModelInfo): string {
 export interface WorkBuddyAdapterOptions {
   providerId?: string
   displayName?: string
+  /**
+   * Which endpoint this adapter serves, from the variant descriptor. Decides
+   * only whether the CN `onlyReasoning` veto hides `off` (#87); defaults to
+   * `'cn'`, the same legacy default `providerId` carries.
+   */
+  region?: WorkBuddyRegion
   shim: WorkBuddyShim
   store: WorkBuddyCredentialStore
   catalog: WorkBuddyCatalog
@@ -217,13 +223,24 @@ export interface WorkBuddyAdapter {
  * It is never probed — disabling thinking is a separate capability, and the
  * per-model acceptance of `off` cannot be inferred from the row's shape.
  *
+ * The CN endpoint vetoes `off` further, on models declaring `onlyReasoning`
+ * (#87) — see {@link region} below. That rule is deliberately region-scoped:
+ * the contradiction it resolves was measured on the CN catalog, and applying
+ * it everywhere would have changed which levels the international picker
+ * offers, which is outside this issue.
+ *
  * The offered set is described internally as "verified accepted", never as
  * "verified effective": acceptance proves the upstream did not reject the
  * spelling, not that it changes what the model does.
+ *
+ * @param region - the endpoint this descriptor is for. Decides only whether
+ * the `onlyReasoning` veto applies; every other rule is shared. Passed from
+ * the variant descriptor, never inferred from a model id or a name.
  */
 export function reasoningFields(
   info: WorkBuddyModelInfo,
   observed?: WorkBuddyProbeRecord,
+  region: WorkBuddyRegion = 'cn',
 ): { reasoning: boolean; thinkingLevelMap?: ThinkingLevelMap } {
   const reasoning = info.reasoning
   if (reasoning === undefined || reasoning.supports !== true) {
@@ -246,18 +263,22 @@ export function reasoningFields(
   const map: Record<ModelThinkingLevel, string | null> = {
     // Probing never grants `off`; only an explicit declaration does.
     //
-    // `onlyReasoning` vetoes it even when declared (#87). The CN catalog ships
-    // both flags true on `deepseek-v4.1-flash` and `kimi-k2.8-preview`, which
-    // cannot both hold — a model that only ever reasons has no non-thinking
-    // mode to select — and the endpoint sides with `onlyReasoning`, answering
-    // HTTP 400 (「模型不支持该思考强度」) for every `off` request. Offering a
-    // level that is certain to fail is worse than not offering it, so the
-    // contradiction is resolved toward the flag the wire agrees with.
+    // On CN, `onlyReasoning` vetoes it even when declared (#87). That catalog
+    // ships both flags true on `deepseek-v4.1-flash` and `kimi-k2.8-preview`,
+    // which cannot both hold — a model that only ever reasons has no
+    // non-thinking mode to select — and the endpoint sides with
+    // `onlyReasoning`, answering HTTP 400 (「模型不支持该思考强度」) for every
+    // `off` request. Offering a level that is certain to fail is worse than not
+    // offering it, so the contradiction is resolved toward the flag the wire
+    // agrees with.
     //
-    // The request layer strips the spelling too (`dropUnsupportedEffort`), so
-    // this is defence in depth rather than the only guard: a model whose flags
-    // flip between catalog reads still cannot put `off` on the wire.
-    off: reasoning.canDisableThinking === true && reasoning.onlyReasoning !== true
+    // Scoped to CN on purpose: the international catalog does not carry this
+    // contradiction, and hiding Off there would remove a level those models
+    // can still use. The request layer strips the spelling in both regions
+    // (`dropUnsupportedEffort`), so a model whose flags flip between catalog
+    // reads cannot put `off` on the wire either way.
+    off: reasoning.canDisableThinking === true
+      && (region !== 'cn' || reasoning.onlyReasoning !== true)
       && declared !== undefined && declared.length > 0 ? 'off' : null,
     // `minimal` is not in the upstream effort vocabulary (EFFORT_VALUES), so
     // no declared set — and no probe candidate — can ever contain it.
@@ -272,7 +293,7 @@ export function reasoningFields(
 }
 
 /** Build one pi-ai model descriptor pointing at the loopback shim. */
-function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, observed?: WorkBuddyProbeRecord, providerId = WORKBUDDY_PROVIDER): Model<Api> {
+function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, observed: WorkBuddyProbeRecord | undefined, providerId: string, region: WorkBuddyRegion): Model<Api> {
   return {
     id: info.id,
     name: info.name,
@@ -280,7 +301,7 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, observed?: WorkBud
     provider: providerId,
     baseUrl,
     input: info.supportsImages === true ? ['text', 'image'] : ['text'],
-    ...reasoningFields(info, observed),
+    ...reasoningFields(info, observed, region),
     cost: NO_COST,
     contextWindow: info.contextWindow,
     maxTokens: info.maxTokens,
@@ -306,12 +327,13 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
   const { shim, store, catalog, resolveAttachments, resolveImageAccess, observe, hidden } = options
   const providerId = options.providerId ?? WORKBUDDY_PROVIDER
   const displayName = options.displayName ?? 'WorkBuddy'
+  const region = options.region ?? 'cn'
 
   const buildModels = (): Model<Api>[] => {
     // The OpenAI SDK pi-ai drives appends `/chat/completions` to baseURL,
     // so the shim's routes line up with the `/v1` prefix in place.
     const baseUrl = `${shim.baseUrl()}/v1`
-    return catalog.current().map(info => toPiModel(info, baseUrl, observe?.(info.id), providerId))
+    return catalog.current().map(info => toPiModel(info, baseUrl, observe?.(info.id), providerId, region))
   }
 
   const base = createProvider({

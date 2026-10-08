@@ -19,6 +19,47 @@ interface AdapterSnapshot {
   }
 }
 
+/** A catalog with one row that both only-reasons and claims it can be disabled. */
+function onlyReasoningCatalog(): WorkBuddyCatalog {
+  return new WorkBuddyCatalog([{
+    id: 'only-reasoning',
+    name: 'Only Reasoning',
+    contextWindow: 1_000,
+    maxTokens: 128_000,
+    supportsImages: false,
+    billing: { free: false },
+    reasoning: {
+      supports: true,
+      onlyReasoning: true,
+      canDisableThinking: true,
+      supportedEfforts: ['low', 'high', 'max'],
+    },
+  }])
+}
+
+/** The thinking map this adapter offers for a catalog's single row. */
+function thinkingModelFor(
+  catalog: WorkBuddyCatalog,
+  region: 'cn' | 'global',
+): { thinkingLevelMap?: Record<string, string | null> } | undefined {
+  const { adapter } = createWorkBuddyAdapter({
+    catalog,
+    region,
+    store: {} as WorkBuddyCredentialStore,
+    shim: {
+      ready: Promise.resolve(),
+      baseUrl: () => 'http://127.0.0.1:1',
+      token: () => 'test-token',
+      close: async () => {},
+    } as WorkBuddyShim,
+  })
+  const snapshot = (adapter as unknown as { current(): AdapterSnapshot }).current()
+  const id = catalog.current()[0]?.id ?? ''
+  return snapshot.models.getModel(WORKBUDDY_PROVIDER, id) as
+    | { thinkingLevelMap?: Record<string, string | null> }
+    | undefined
+}
+
 describe('WorkBuddy adapter model descriptors', () => {
   it('uses WorkBuddy\'s max_tokens output-cap field', () => {
     const catalog = new WorkBuddyCatalog([{
@@ -88,42 +129,70 @@ describe('WorkBuddy adapter model descriptors', () => {
     expect(bareSnapshot.models.getModel(WORKBUDDY_PROVIDER, 'bare')?.thinkingLevelMap?.off).toBeNull()
   })
 
-  it('withholds `off` from a model that declares it can only reason (issue #87)', () => {
+  it('withholds `off` on CN when the model declares it can only reason (issue #87)', () => {
     // The CN catalog ships both flags true on `deepseek-v4.1-flash` and
     // `kimi-k2.8-preview`, which cannot both hold. The endpoint sides with
     // `onlyReasoning` (400 / 11150 for every `off` request), so the picker must
     // not offer a level that is certain to fail.
-    const catalog = new WorkBuddyCatalog([{
-      id: 'only-reasoning',
-      name: 'Only Reasoning',
-      contextWindow: 1_000,
-      maxTokens: 128_000,
-      supportsImages: false,
-      billing: { free: false },
-      reasoning: {
-        supports: true,
-        onlyReasoning: true,
-        canDisableThinking: true,
-        supportedEfforts: ['low', 'high', 'max'],
-      },
-    }])
-    const { adapter } = createWorkBuddyAdapter({
-      catalog,
-      store: {} as WorkBuddyCredentialStore,
-      shim: {
-        ready: Promise.resolve(),
-        baseUrl: () => 'http://127.0.0.1:1',
-        token: () => 'test-token',
-        close: async () => {},
-      } as WorkBuddyShim,
-    })
-    const snapshot = (adapter as unknown as { current(): AdapterSnapshot }).current()
-    const model = snapshot.models.getModel(WORKBUDDY_PROVIDER, 'only-reasoning')
-    // `null` keeps Off out of the picker, while the declared efforts survive.
+    const model = thinkingModelFor(onlyReasoningCatalog(), 'cn')
     expect(model?.thinkingLevelMap?.off).toBeNull()
     expect(model?.thinkingLevelMap?.low).toBe('low')
     expect(model?.thinkingLevelMap?.high).toBe('high')
     expect(model?.thinkingLevelMap?.max).toBe('max')
+  })
+
+  it('keeps `off` on Global for the same row, so the change stays CN-scoped', () => {
+    // The `onlyReasoning` veto is a CN measurement (#87). The international
+    // catalog does not carry the contradiction, and hiding Off there would
+    // remove a level those models still accept — outside this issue's scope.
+    const model = thinkingModelFor(onlyReasoningCatalog(), 'global')
+    expect(model?.thinkingLevelMap?.off).toBe('off')
+    // The declared efforts are untouched in both regions.
+    expect(model?.thinkingLevelMap?.low).toBe('low')
+    expect(model?.thinkingLevelMap?.high).toBe('high')
+    expect(model?.thinkingLevelMap?.max).toBe('max')
+  })
+
+  it('offers no `off` anywhere when the model cannot disable thinking', () => {
+    for (const region of ['cn', 'global'] as const) {
+      const model = thinkingModelFor(new WorkBuddyCatalog([{
+        id: 'model',
+        name: 'Model',
+        contextWindow: 1_000,
+        maxTokens: 128_000,
+        supportsImages: false,
+        billing: { free: false },
+        reasoning: {
+          supports: true,
+          onlyReasoning: false,
+          canDisableThinking: false,
+          supportedEfforts: ['low', 'high', 'max'],
+        },
+      }]), region)
+      expect(model?.thinkingLevelMap?.off).toBeNull()
+    }
+  })
+
+  it('keeps `off` in both regions for a row that only allows disabling', () => {
+    // The pre-#87 rule, which Global must keep exactly: declared set present
+    // and `canDisableThinking`, with `onlyReasoning` false.
+    for (const region of ['cn', 'global'] as const) {
+      const model = thinkingModelFor(new WorkBuddyCatalog([{
+        id: 'model',
+        name: 'Model',
+        contextWindow: 1_000,
+        maxTokens: 128_000,
+        supportsImages: false,
+        billing: { free: false },
+        reasoning: {
+          supports: true,
+          onlyReasoning: false,
+          canDisableThinking: true,
+          supportedEfforts: ['low', 'high', 'max'],
+        },
+      }]), region)
+      expect(model?.thinkingLevelMap?.off).toBe('off')
+    }
   })
 })
 

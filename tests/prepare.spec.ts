@@ -15,11 +15,14 @@ describe('prepareChatBody', () => {
     expect(body['tool_choice']).toBe('auto')
   })
 
-  it('passes `reasoning_effort` through verbatim, including the adapter\'s own `off` (issue #49)', () => {
-    // The shared preparation is region-agnostic: the CN variant keeps its
-    // existing wire behaviour, so `off` (and any other value) survives here.
-    // The international-only strip lives one layer down, in
-    // `prepareInternationalChatBody` — pinned by the tests below and by the
+  it('passes `reasoning_effort` through verbatim, including the adapter\'s own `off`', () => {
+    // `prepareChatBody` is shared by both regions and deliberately keeps its
+    // hands off `reasoning_effort`: it normalises the wire shape, not the
+    // effort. Since #87 the strip runs one layer down on *both* region paths —
+    // `prepareCnChatBody` and `prepareInternationalChatBody` each call
+    // `dropUnsupportedEffort` — so `off` reaches neither upstream. The two
+    // paths stay separate because the bodies otherwise differ: only the
+    // international one prepends a system prompt. See the specs below and the
     // chatStream-level spec in upstream.spec.ts.
     for (const effort of ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'none']) {
       const body = JSON.parse(prepareChatBody(JSON.stringify({ messages: [], reasoning_effort: effort })))
@@ -203,5 +206,55 @@ describe('prepareCnChatBody effort handling (issue #87)', () => {
 
   it('leaves a JSON array body unchanged rather than re-wrapping it', () => {
     expect(prepareCnChatBody('[1,2]')).toBe('[1,2]')
+  })
+})
+
+describe('both region paths never send the `off` spelling (issue #87)', () => {
+  const REGIONS = [
+    ['CN', prepareCnChatBody],
+    ['international', prepareInternationalChatBody],
+  ] as const
+
+  it.each(REGIONS)('%s drops `off` from the body', (_label, prepare) => {
+    const body = JSON.parse(prepare(JSON.stringify({
+      model: 'm',
+      messages: [{ role: 'system', content: 'sys' }],
+      reasoning_effort: 'off',
+    })))
+    expect('reasoning_effort' in body).toBe(false)
+  })
+
+  it.each(REGIONS)('%s omits the field when Default resolves to `off`', (_label, prepare) => {
+    // Default and Off serialize identically: pi-ai fills
+    // `thinkingLevelMap.off` whenever no level is given. The request layer is
+    // what makes both succeed — hiding the Off menu item alone would leave
+    // Default failing.
+    const explicitOff = prepare(JSON.stringify({ model: 'm', messages: [], reasoning_effort: 'off' }))
+    const noLevel = prepare(JSON.stringify({ model: 'm', messages: [] }))
+    expect(JSON.parse(explicitOff)).toEqual(JSON.parse(noLevel))
+  })
+
+  it.each(REGIONS)('%s leaves every declared spelling and `none` untouched', (_label, prepare) => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', 'none']) {
+      const body = JSON.parse(prepare(JSON.stringify({ messages: [], reasoning_effort: effort })))
+      expect(body['reasoning_effort']).toBe(effort)
+    }
+  })
+
+  it.each(REGIONS)('%s keeps the rest of the body intact', (_label, prepare) => {
+    const body = JSON.parse(prepare(JSON.stringify({
+      model: 'm',
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 128,
+      reasoning_effort: 'off',
+    })))
+    expect(body['model']).toBe('m')
+    expect(body['max_tokens']).toBe(128)
+    // Only the strip is shared: the international path still prepends its
+    // system prompt (its own documented behaviour), so assert on the caller's
+    // message surviving rather than on an identical array.
+    const messages = body['messages'] as { role: string, content: string }[]
+    expect(messages.at(-1)).toEqual({ role: 'user', content: 'hi' })
+    expect(messages.length === 1 || messages[0]?.role === 'system').toBe(true)
   })
 })

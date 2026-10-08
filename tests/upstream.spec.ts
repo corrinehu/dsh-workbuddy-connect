@@ -622,9 +622,9 @@ describe('WorkBuddyUpstreamClient.fetchModels badge merge', () => {
 describe('chatStream wire effort by region (issue #49)', () => {
   /**
    * THE REGION-SPLIT ACCEPTANCE: judged on the request that actually leaves
-   * `chatStream`, not on any intermediate helper. The CN variant must keep its
-   * existing wire (the adapter's own `off` spelling included); the
-   * international variant must drop exactly that spelling and nothing else.
+   * `chatStream`, not on any intermediate helper. Both regions drop the
+   * adapter's own `off` spelling and nothing else — the CN half used to be
+   * exempt by an explicit scope decision, which #87 invalidated.
    */
   const AI_CREDENTIAL: WorkBuddyCredential = { ...CREDENTIAL, domain: 'www.workbuddy.ai' }
 
