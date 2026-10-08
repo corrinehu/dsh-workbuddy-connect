@@ -369,6 +369,80 @@ const WINDOWS_REGISTRY_ROOTS = [
 const WINDOWS_REGISTRY_OUTPUT_MAX_BYTES = 1024 * 1024
 const WINDOWS_ELECTRON_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u
 
+/**
+ * The replacement character Node substitutes for bytes that are not valid
+ * UTF-8. Its presence is the *only* thing this file treats as evidence about
+ * encoding (#88).
+ *
+ * It is a signal, not a guess. `reg.exe` output that decodes cleanly here was
+ * genuinely UTF-8, so its paths can be trusted as-is. Output containing U+FFFD
+ * means the bytes were in some other code page — which one cannot be
+ * determined from the bytes, and this file never tries. The response is to
+ * re-read the same root through a path that bypasses code pages entirely.
+ *
+ * A real Windows path cannot contain U+FFFD, so there is no false trigger to
+ * worry about; and a *missed* trigger (some code page whose bytes happen to be
+ * valid UTF-8) is still not a wrong answer — the ASCII skeleton of a `reg
+ * query` document is identical in every code page, so a mis-decoded non-ASCII
+ * path simply fails the later `statSync` exactly as it did before this fix.
+ */
+const WINDOWS_REPLACEMENT_CHARACTER = '\uFFFD'
+
+/**
+ * The PowerShell command that re-reads one uninstall root as UTF-8.
+ *
+ * Used *only* as a fallback, and only to supply data: the caller feeds its
+ * output through the same {@link parseWindowsRegistryOutput} and
+ * {@link inspectWindowsElectronCandidate} as the `reg.exe` path, so candidate
+ * validation, uniqueness, and the "we could not check" rules are unchanged.
+ *
+ * Why a different tool rather than a smarter decode: `reg.exe` writes in a
+ * code page chosen by the console it inherits, and no inspection of the
+ * resulting bytes can recover which one. .NET's registry API returns strings,
+ * so the question never arises.
+ *
+ * Structure notes, each one a defect fixed after review:
+ *
+ * - **`param` is the first statement.** A `param` block must lead the script
+ *   block; putting the encoding assignment before it is a parse error in
+ *   Windows PowerShell 5.1.
+ * - **`[Console]::OutputEncoding` is set explicitly.** Windows PowerShell 5.1
+ *   encodes redirected stdout with it, so UTF-8 is *defined* for this child
+ *   rather than inferred from what comes back.
+ * - **Exit codes distinguish "root absent" from "root unreadable"** (`2` and
+ *   `3`). The caller branches on the code, never on message text, so the
+ *   localized diagnostics below cannot change an outcome.
+ * - **An unopenable subkey is `3`, not `continue`.** Skipping it silently
+ *   could drop a real candidate and make the product look absent, which is
+ *   precisely the confusion the caller's `incomplete` state exists to prevent.
+ * - **Output is JSON.** PowerShell does the escaping, so paths containing
+ *   spaces, commas, or quotes no longer depend on column positions, and only
+ *   the two values this plugin reads are collected.
+ *
+ * The root is passed as a `-Root` argument, never interpolated into the
+ * command text.
+ */
+const WINDOWS_REGISTRY_RELATIVE_POWERSHELL = 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+/** Exit code meaning the root key does not exist (a normal, expected outcome). */
+const WINDOWS_POWERSHELL_ROOT_ABSENT = 2
+/** Exit code meaning the root exists but a part of it could not be read. */
+const WINDOWS_POWERSHELL_ROOT_UNREADABLE = 3
+const WINDOWS_POWERSHELL_QUERY_SCRIPT = [
+  'param([string]$Root)',
+  '[Console]::OutputEncoding=[Text.Encoding]::UTF8;',
+  '$ErrorActionPreference="Stop";',
+  '$path="Registry::"+$Root;',
+  'if (-not (Test-Path -LiteralPath $path)) { [Console]::Error.Write("root absent"); exit 2 };',
+  'try { $k=Get-Item -LiteralPath $path -ErrorAction Stop } catch { [Console]::Error.Write("root unreadable"); exit 3 };',
+  '$out=@();',
+  'foreach ($n in $k.GetSubKeyNames()) {',
+  '  try { $p=$k.OpenSubKey($n); if ($null -eq $p) { throw "null" } } catch { [Console]::Error.Write("subkey unreadable"); exit 3 };',
+  '  $d=$p.GetValue("DisplayName");$i=$p.GetValue("DisplayIcon");',
+  '  if ($null -ne $d -or $null -ne $i) { $out += [pscustomobject]@{ displayName=[string]$d; displayIcon=[string]$i } }',
+  '};',
+  'ConvertTo-Json -InputObject @($out) -Compress -Depth 3',
+].join(' ')
+
 /** One discovery subprocess's own limits; see {@link WorkBuddyAtRestKeyProviderOptions}. */
 export const WORKBUDDY_DISCOVERY_STEP_TIMEOUT_MS = 3_000
 /** Whole-discovery budget, independent of the helper's own timeout. */
@@ -558,7 +632,18 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
   const regPath = systemRoot === undefined || systemRoot === ''
     ? undefined
     : join(systemRoot, 'System32', 'reg.exe')
-  const runTool = (root: string, signal: AbortSignal): Promise<string> => new Promise<string>((resolve, reject) => {
+  /**
+   * The fallback interpreter. Resolved by absolute path from SystemRoot, like
+   * `reg.exe`: never through PATH, which a user can change.
+   *
+   * Windows PowerShell 5.1 ships with Windows, so unlike `pwsh` it can be
+   * relied on; the script is written to its syntax (see
+   * {@link WINDOWS_POWERSHELL_QUERY_SCRIPT}).
+   */
+  const powershellPath = systemRoot === undefined || systemRoot === ''
+    ? undefined
+    : join(systemRoot, WINDOWS_REGISTRY_RELATIVE_POWERSHELL)
+  const runTool = (root: string, signal: AbortSignal): Promise<Buffer> => new Promise<Buffer>((resolve, reject) => {
     if (regPath === undefined) {
       reject(new DiscoveryIncompleteError('SystemRoot is not configured'))
       return
@@ -572,16 +657,23 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
       maxBuffer: WINDOWS_REGISTRY_OUTPUT_MAX_BYTES,
       timeout: WORKBUDDY_DISCOVERY_STEP_TIMEOUT_MS,
       windowsHide: true,
+      // Raw bytes, not a decode: whether this output is ambiguous is decided
+      // from the bytes themselves (#88), so Node must not pick an encoding.
+      encoding: 'buffer',
     }, (error, stdout, stderr) => {
       if (settled) return
       settled = true
       // `reg query` uses exit code 1 for more than a missing key. Only a
       // confirmed missing-key diagnostic is an empty result; every other
       // failure stays incomplete rather than becoming "not installed".
+      //
+      // Both supported diagnostics are ASCII in every code page, so reading
+      // stderr as UTF-8 cannot change whether this regex matches; a diagnostic
+      // that is not one of them stays incomplete, as before.
       if (error !== null && error !== undefined) {
         if (error.killed !== true && (error.code === 1 || error.code === '1')
-          && windowsRegistryKeyMissing(stderr)) {
-          resolve('')
+          && windowsRegistryKeyMissing(stderr.toString('utf8'))) {
+          resolve(Buffer.alloc(0))
           return
         }
         reject(new DiscoveryIncompleteError(`reg.exe could not complete (${error.killed === true ? 'timed out' : String(error.code ?? 'unavailable')})`))
@@ -598,7 +690,139 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
     signal.addEventListener('abort', abort, { once: true })
     child.on('close', () => { signal.removeEventListener('abort', abort) })
   })
-  return { queryUninstallRoot: runTool }
+
+  /**
+   * Re-read one root through PowerShell's Unicode registry API (#88).
+   *
+   * Returns the same column-shaped document the `reg.exe` path produces, so
+   * the caller's parser and candidate checks apply unchanged. Every failure
+   * that means "we could not tell" is a {@link DiscoveryIncompleteError}, and
+   * a root that simply does not exist yields an empty document — one of the
+   * three roots being absent is normal and must not fail the search.
+   */
+  const runFallback = (root: string, signal: AbortSignal): Promise<string> => new Promise<string>((resolve, reject) => {
+    if (powershellPath === undefined) {
+      reject(new DiscoveryIncompleteError('SystemRoot is not configured'))
+      return
+    }
+    if (signal.aborted) {
+      reject(new DiscoveryIncompleteError('powershell.exe was not started: the discovery budget was already spent'))
+      return
+    }
+    let settled = false
+    const child = execFile(powershellPath, [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      WINDOWS_POWERSHELL_QUERY_SCRIPT,
+      '-Root',
+      root,
+    ], {
+      maxBuffer: WINDOWS_REGISTRY_OUTPUT_MAX_BYTES,
+      timeout: WORKBUDDY_DISCOVERY_STEP_TIMEOUT_MS,
+      windowsHide: true,
+      encoding: 'utf8',
+    }, (error, stdout) => {
+      if (settled) return
+      settled = true
+      if (error !== null && error !== undefined) {
+        // Classification is by exit code, never by stderr text: these
+        // diagnostics are written by PowerShell and may themselves be
+        // unreadable in a non-UTF-8 console.
+        const code = error.killed === true ? undefined : Number(error.code)
+        if (code === WINDOWS_POWERSHELL_ROOT_ABSENT) {
+          resolve('')
+          return
+        }
+        if (code === WINDOWS_POWERSHELL_ROOT_UNREADABLE) {
+          reject(new DiscoveryIncompleteError(`powershell.exe could not read the registry root ${root}`))
+          return
+        }
+        reject(new DiscoveryIncompleteError(`powershell.exe could not complete (${error.killed === true ? 'timed out' : String(error.code ?? 'unavailable')})`))
+        return
+      }
+      const records = parseWindowsUninstallJson(stdout)
+      if (records === undefined) {
+        reject(new DiscoveryIncompleteError('powershell.exe output was not the expected registry document'))
+        return
+      }
+      resolve(records)
+    })
+    const abort = (): void => {
+      if (settled) return
+      settled = true
+      child.kill()
+      reject(new DiscoveryIncompleteError('powershell.exe was abandoned: the discovery budget was spent'))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    child.on('close', () => { signal.removeEventListener('abort', abort) })
+  })
+
+  return {
+    queryUninstallRoot: async (root, signal) => {
+      const raw = await runTool(root, signal)
+      // Fall back only when the primary output cannot be read unambiguously
+      // (#88). The trigger is a property of the *bytes*, never of a decoding:
+      // ASCII-only output means every code page agrees, so nothing is
+      // ambiguous; one byte at or above 0x80 means the code page is
+      // unknowable from the bytes, so no decode of them can be trusted.
+      //
+      // Checking for U+FFFD instead would have been wrong: 1920 distinct GBK
+      // byte pairs decode as valid UTF-8 with no replacement character at all,
+      // so the reported case could pass silently. Byte range has no such blind
+      // spot.
+      if (isAsciiOnly(raw)) return raw.toString('utf8')
+      return await runFallback(root, signal)
+    },
+  }
+}
+
+/**
+ * Whether every byte is ASCII, the one case where a decode cannot be wrong.
+ *
+ * @param bytes - the child's raw stdout.
+ */
+function isAsciiOnly(bytes: Buffer): boolean {
+  for (const byte of bytes) {
+    if (byte >= 0x80) return false
+  }
+  return true
+}
+
+/**
+ * Turn the fallback's JSON into the same column-shaped document
+ * {@link parseWindowsRegistryOutput} already consumes.
+ *
+ * Re-encoding into the `reg query` text form on purpose: the parser and
+ * {@link parseWindowsDisplayIcon} carry the candidate-quoting rules that are
+ * shared with existing tests, and the seam between this tool and the provider
+ * is a string. Records carrying neither value are skipped, and the key name is
+ * synthetic because only the values are read.
+ *
+ * @param output - the child's UTF-8 stdout.
+ * @returns the document, or `undefined` when it was not the expected JSON.
+ */
+function parseWindowsUninstallJson(output: string): string | undefined {
+  let document: unknown
+  try {
+    document = JSON.parse(output)
+  } catch {
+    return undefined
+  }
+  // `ConvertTo-Json` collapses a one-element array into a bare object.
+  const rows = Array.isArray(document) ? document : [document]
+  const lines: string[] = []
+  for (const [index, row] of rows.entries()) {
+    if (typeof row !== 'object' || row === null) continue
+    const record = row as Record<string, unknown>
+    const displayName = record['displayName']
+    const displayIcon = record['displayIcon']
+    if (typeof displayName !== 'string' && typeof displayIcon !== 'string') continue
+    lines.push(`HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{PS-${String(index)}}`)
+    if (typeof displayName === 'string') lines.push(`    DisplayName    REG_SZ    ${displayName}`)
+    if (typeof displayIcon === 'string') lines.push(`    DisplayIcon    REG_SZ    ${displayIcon}`)
+  }
+  return lines.join('\r\n')
 }
 
 /**
