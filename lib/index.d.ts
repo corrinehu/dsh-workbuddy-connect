@@ -330,6 +330,49 @@ interface WorkBuddyCreditAccount {
   remain: number;
   size: number;
   unlimited?: true;
+  /**
+   * When the package's own cycle ends, in epoch milliseconds.
+   *
+   * The upstream has always sent this (`CycleEndTime`, a zone-less
+   * `YYYY-MM-DD HH:mm:ss` string) and the query itself already filters on
+   * `PackageEndTimeRange`, but the field used to be dropped here — so a card
+   * could show "500 credit" for a package expiring in an hour with nothing to
+   * distinguish it from one expiring next month. Absent when the upstream omits
+   * or malforms it, which must never read as "no expiry".
+   *
+   * The zone the upstream means is **not established**: reading the string as
+   * the running machine's local time follows the official desktop client (see
+   * {@link parseCycleEndTime}), and is not a claim about the account's zone.
+   */
+  endTimeMs?: number;
+}
+/** Credit whose package expires within a horizon the user should act on. */
+interface WorkBuddyExpiringCredits {
+  /** Sum of {@link WorkBuddyCreditAccount.remain} over the window. */
+  total: number;
+  /** How many packages contribute to {@link total}. */
+  packages: number;
+  /** The soonest `endTimeMs` among them. */
+  earliestEndTimeMs?: number;
+}
+/**
+ * Credit at risk, bucketed by how soon it lapses.
+ *
+ * Thresholds are calendar-ish (24h / 3d / 7d) rather than "this month": a package
+ * expiring at 08:00 tomorrow is not helped by a monthly average, and the upstream
+ * genuinely staggers expiries per package.
+ *
+ * Only *future* horizons are reported. An already-lapsed package is deliberately
+ * **not** summarised here: the personal billing query this feeds filters
+ * `Status: [0, 3]` (`valid` + `usedUp`) from the current time forward, while the
+ * upstream marks a lapsed package `Status: 2` (`expired`) — a status this query
+ * never returns. Historical expiry would need its own query, which is out of
+ * scope.
+ */
+interface WorkBuddyCreditExpiry {
+  within24h: WorkBuddyExpiringCredits;
+  within3d: WorkBuddyExpiringCredits;
+  within7d: WorkBuddyExpiringCredits;
 }
 /** Aggregated credit answer for one credential. */
 interface WorkBuddyCredits {
@@ -347,6 +390,13 @@ interface WorkBuddyCredits {
    */
   unlimited?: true;
   cycleResetTime?: string;
+  /**
+   * Credit lapsing soon, so a card can warn instead of only reporting a total.
+   *
+   * Absent when no account carried a usable end time — the plugin must not
+   * claim "nothing expires soon" on the strength of data it never received.
+   */
+  expiry?: WorkBuddyCreditExpiry;
 }
 /** Token refresh answer; fields the upstream omits stay absent. */
 interface WorkBuddyRefreshOutcome {

@@ -27,6 +27,8 @@
 
 - **推理档位**：WorkBuddy 明确声明的档位会直接显示，例如 GLM-5.3 和 GLM-5.3-Flash 可选 low / high / max。对于部分没有声明可选档位的模型，Web 和 Desktop 可在模型选择器中点击「推理等级」手动检测；检测会发送少量请求，可能消耗积分。未检测或没有可用档位的模型仍使用 WorkBuddy 的默认档位。
 
+- **余额速览**：选中 WorkBuddy / WorkBuddy AI 的模型时，输入框底部会在模型选择器旁显示一行当前账号的剩余积分（如 `WB.3,401（积分）`、国际版 `WB AI.3,401（积分）`）。积分不自动轮询（每次状态读取都会真实查询计费），挂载读取一次后可点击旁边的 ↻ 手动刷新。
+
 
 - **信息查看与检测**：设置 → 插件 → 对应卡片可查看账号、令牌有效期、剩余积分和模型优惠（DSH `0.1.6+` 上入口在左侧栏「插件」面板，见下方版本对应一节）；也可以手动刷新模型列表，并在卡片上看到当前列表来自上游还是内置兜底。对于可检测模型，也可以在这里手动检测推理档位。
 
@@ -70,7 +72,8 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 
 | 插件版本 | 要求的 DSH 核心 | 桌面 App |
 |---|---|---|
-| **0.7.1（当前稳定版）** | **仅支持 `0.2.0-rc.2`**（`0.2.0-rc.1` 用户请停留在 `0.7.0`），并把 `@earendil-works/pi-ai` peer 从 `^0.85.1 \|\| ^0.87.1` 收窄为 **`^0.87.1`**：从 `0.6.x` 原地升级的 pnpm profile 不再因旧 `pi-ai@0.85.1` 仍在范围内而被保留、复现 [#69](https://github.com/corrinehu/dsh-workbuddy-connect/issues/69) 的两代混用（[#74](https://github.com/corrinehu/dsh-workbuddy-connect/issues/74)）。**从 `0.6.5` 原地升级已实测**：编辑 `package.json` 后 `pnpm install`，插件即解析到 `pi-ai@0.87.1`，无需任何 override；同时在 `0.7.0` 上复现了双臂范围放行 `0.85.1` 的原行为作为对照。 | 内置 `0.2.0-rc.2` 内核的桌面版（预览 / nightly） |
+| **0.7.2** | **仅支持 `0.2.0-rc.2`**（`0.2.0-rc.1` 用户请停留在 `0.7.0`），并把 `@earendil-works/pi-ai` 从 **peer 依赖改为插件自带的普通依赖**（精确 `0.87.1`）：插件不再依赖 profile 顶层那一份 pi-ai，避免被其他包留下的旧拷贝（如 `0.82.x`）遮蔽而加载到错误版本（[#92](https://github.com/corrinehu/dsh-workbuddy-connect/issues/92)）。**在正常、正确的安装下**插件会优先解析自己安装的那份；解析结果仍取决于具体 installer 与 profile 布局，异常时插件会在加载时给出告警。同时修复国内版 `Off` / `Default` 档位请求被拒（[#87](https://github.com/corrinehu/dsh-workbuddy-connect/issues/87)）与 Windows 卸载记录编码（[#88](https://github.com/corrinehu/dsh-workbuddy-connect/issues/88)）。 | 内置 `0.2.0-rc.2` 内核的桌面版（预览 / nightly） |
+| **0.7.1（历史版本）** | 仅支持 `0.2.0-rc.2`，并把 `@earendil-works/pi-ai` peer 从 `^0.85.1 \|\| ^0.87.1` 收窄为 **`^0.87.1`**：从 `0.6.x` 原地升级的 pnpm profile 不再因旧 `pi-ai@0.85.1` 仍在范围内而被保留、复现 [#69](https://github.com/corrinehu/dsh-workbuddy-connect/issues/69) 的两代混用（[#74](https://github.com/corrinehu/dsh-workbuddy-connect/issues/74)）。**从 `0.6.5` 原地升级已实测**：编辑 `package.json` 后 `pnpm install`，插件即解析到 `pi-ai@0.87.1`，无需任何 override；同时在 `0.7.0` 上复现了双臂范围放行 `0.85.1` 的原行为作为对照。该版仍以 **peer** 方式使用 profile 顶层的 pi-ai —— 这一局限在 `0.7.2` 已修复 | 内置 `0.2.0-rc.2` 内核的桌面版（预览 / nightly） |
 | **0.7.0（0.2.0 世代首发）** | **仅支持 `0.2.0-rc.1` / `0.2.0-rc.2`**（`0.1.5` / `0.1.6` / `0.1.7` 不再支持，用户请停留在 `0.6.5`），已在 `0.2.0-rc.2` 真机实测（web 端：加载、国内版与国际版目录、加密凭据、状态路由正常）。这是适配 DSH `0.2.0` 设置服务改造的版本——`0.2.0` 把设置服务换成了 Config 表单门面，移除了旧的 `installSection` 接口，早期版本在上面会丢失设置项。**`0.7.1` 起不再支持 `rc.1`** | 内置 `0.2.0` 内核的桌面版（预览 / nightly） |
 | **0.6.0（双界面自适应）** | `0.1.5-rc.1` / `rc.2` / `rc.3`；`0.1.6-alpha` 系列（含 `alpha.1` / `alpha.2`）与 `0.1.6` 正式版；已实测 `0.1.7-alpha.1`（`0.1.7` 正式版同样在范围内）。**后续 `0.1.x` prerelease（如 `0.1.8-alpha.x`）同样落在 `^0.1.7-alpha.1` 区间内**——宿主兼容判定按 includePrerelease 语义解析 peer range（早先「不自动覆盖」的说法有误，已更正）；跨入 `0.2.0` 的 prerelease 才需要插件显式扩展 peer range | `2.0.7`+ 可直接使用；搭载 `0.1.6+` 核心的桌面版发布后同样适用 |
 | **0.6.5（`0.1.x` 线最终版）** | 在 `0.6.0` 的支持面上追加 `0.2.0-rc.1`（`0.1.5` / `0.1.6` / `0.1.7` / `0.2.0-rc.1`），已在 `0.2.0-rc.1` 真机实测（web 端：加载、目录、加密凭据、对话与图片往返正常）。已发布的 `0.6.4` 及更早版本不含该区间，在 DSH `0.2.0-rc.1` 上会被宿主整体跳过（见 [#63](https://github.com/corrinehu/dsh-workbuddy-connect/issues/63)） | 内置 `0.1.x` 内核的桌面版（含 `2.0.7` 起的已发布正式版）；`0.2.0-rc.1` 亦可（web 已实测，桌面版待实测） |
@@ -105,13 +108,14 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
   ```
 
 - 自 `0.6.0` 起，Models 设置页不再显示 WorkBuddy / WorkBuddy AI 的不可编辑卡片（两代核心行为一致）；模型选择器、`/model` 与对话调用不受影响。
-- DSH `0.2.0-rc.2` 的用户，安装 `0.7.1` 即可：`dsh plugin --profile web add dsh-workbuddy-connect@0.7.1`；还在 `0.2.0-rc.1` 的用户请停留在 `0.7.0`：`dsh plugin --profile web add dsh-workbuddy-connect@0.7.0`
-- 从 `0.6.x` 原地升级的 pnpm profile（曾手动装过 `pi-ai@0.85.1`）：升级到 `0.7.1+` 后 peer 范围不再接受 `0.85.1`，`pnpm install` 会把插件解析到宿主同代的 `0.87.1`；此前按 [#74](https://github.com/corrinehu/dsh-workbuddy-connect/issues/74) 临时加过的 `overrides: {'@earendil-works/pi-ai': 0.87.1}` 可以删掉了
-- **不要把 profile 级的 `@earendil-works/pi-ai` 升到 1.x**：本插件与 `0.2.0-rc.2` 这一代 DSH 内核都要求 `^0.87.1`（见 `package.json` 的 `peerDependencies`）。插件通过 peer 使用 profile 顶层那一份 pi-ai，升到 1.x 可能导致插件加载不兼容版本，并造成不同版本的 pi-ai 在安装树中并存。**部分第三方插件管理器（如 `@linxin666/dsh-client-ui-plugin-manager@0.4.5`）的「检查更新」只看第三方包与 `dsh.engines.dsh`，不校验 peer 约束**，因此可能把 `pi-ai` 列为「可更新」——这个提示不能照做（见 [#86](https://github.com/corrinehu/dsh-workbuddy-connect/issues/86)）
+- DSH `0.2.0-rc.2` 的用户，安装 `0.7.2` 即可：`dsh plugin --profile web add dsh-workbuddy-connect@0.7.2`；还在 `0.2.0-rc.1` 的用户请停留在 `0.7.0`：`dsh plugin --profile web add dsh-workbuddy-connect@0.7.0`
+- 从 `0.6.x` 原地升级的 pnpm profile（曾手动装过 `pi-ai@0.85.1`）：升级到 `0.7.1` 后 peer 范围不再接受 `0.85.1`，`pnpm install` 会把插件解析到宿主同代的 `0.87.1`；此前按 [#74](https://github.com/corrinehu/dsh-workbuddy-connect/issues/74) 临时加过的 `overrides: {'@earendil-works/pi-ai': 0.87.1}` 可以删掉了
+- **不要把 profile 级的 `@earendil-works/pi-ai` 升到 1.x**：本插件与 `0.2.0-rc.2` 这一代 DSH 内核都要求 `^0.87.1`（`0.7.2` 起由插件自带，见 `package.json` 的 `dependencies`；`0.7.1` 及更早为 `peerDependencies`）。升到 1.x 可能导致插件加载不兼容版本，并造成不同版本的 pi-ai 在安装树中并存。**部分第三方插件管理器（如 `@linxin666/dsh-client-ui-plugin-manager@0.4.5`）的「检查更新」只看第三方包与 `dsh.engines.dsh`，不校验 peer 约束**，因此可能把 `pi-ai` 列为「可更新」——这个提示不能照做（见 [#86](https://github.com/corrinehu/dsh-workbuddy-connect/issues/86)）
+- 从 `0.7.1` 升到 `0.7.2` 前请先确认宿主内核为 `0.2.0-rc.2`（`0.7.2` 只支持 `rc.2`，仍在 `rc.1` 的用户请停留在 `0.7.0`）。`pi-ai` 改由插件自带后，此前按 [#74](https://github.com/corrinehu/dsh-workbuddy-connect/issues/74) / [#82](https://github.com/corrinehu/dsh-workbuddy-connect/issues/82) 在 profile 里加过的 `overrides: {'@earendil-works/pi-ai': 0.87.1}` **不要盲目删除**——若其他插件仍依赖它才能解析到正确版本，删除可能让它们受影响；确认其他插件与 DSH 自身解析均正常后再考虑清理，不确定时保留即可（与本插件已不冲突）
 - 还在用 DSH `0.1.5` / `0.1.6` / `0.1.7` 的用户，请停留在 `0.6.5`：`dsh plugin --profile web add dsh-workbuddy-connect@0.6.5`
 - 还在用 DSH `0.1.2-rc.1` 的用户，请停留在 `0.3.1`：`dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - 还在用 DSH `0.1.1-rc.2` 的用户，请停留在 `0.2.6`：`dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
-- 桌面版按**内置核心**选择插件版本：内置 `0.1.x` 内核的桌面版（含 `2.0.7` 起的已发布正式版）用 `dsh-workbuddy-connect@0.6.5`；内置 `0.2.0-rc.2` 内核的桌面版用 `0.7.1`，内置 `0.2.0-rc.1` 内核的用 `0.7.0`（预览 / nightly）；`2.0.5` 及更早（内置 `0.1.2-rc.1`）请继续使用 `0.3.1`
+- 桌面版按**内置核心**选择插件版本：内置 `0.1.x` 内核的桌面版（含 `2.0.7` 起的已发布正式版）用 `dsh-workbuddy-connect@0.6.5`；内置 `0.2.0-rc.2` 内核的桌面版用 `0.7.2`，内置 `0.2.0-rc.1` 内核的用 `0.7.0`（预览 / nightly）；`2.0.5` 及更早（内置 `0.1.2-rc.1`）请继续使用 `0.3.1`
 
 插件在三种 DSH 界面下均可运行：**Web**、**Desktop**、**TUI**。
 
@@ -124,7 +128,7 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 - 插件版本必须与 DSH 内核匹配。先确认内核版本——注意区分来源：Web / TUI 看独立 CLI 的
   `dsh --version`；Desktop 桌面版必须确认其**内置 DSH 核心版本**（桌面 App 的「关于」页），
   不要拿独立 CLI 的版本代替桌面 App 的内核做判断。
-  内核 `0.2.0-rc.2` → 装 `0.7.1`；内核 `0.2.0-rc.1` → 固定 `0.7.0`；内核 `0.1.5`–`0.1.7` → 固定 `0.6.5`；
+  内核 `0.2.0-rc.2` → 装 `0.7.2`；内核 `0.2.0-rc.1` → 固定 `0.7.0`；内核 `0.1.5`–`0.1.7` → 固定 `0.6.5`；
   更早内核见 https://github.com/corrinehu/dsh-workbuddy-connect README 的版本对应表。
 - 我使用的界面是：（发给 Agent 时注明 Web / Desktop 桌面版 / TUI 之一）
 - Web：执行 `dsh plugin --profile web add dsh-workbuddy-connect`（需要指定版本就加 `@版本号`）。
