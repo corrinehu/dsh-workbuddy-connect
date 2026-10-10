@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: 0.87.1
+        version: 0.87.1(ws@8.21.3)(zod@4.4.3)
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.4
@@ -69,7 +73,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.4
       '@earendil-works/pi-ai':
-        specifier: ^0.87.1
+        specifier: 0.87.1
         version: 0.87.1(ws@8.21.3)(zod@4.4.3)
       '@types/node':
         specifier: ^22.20.0

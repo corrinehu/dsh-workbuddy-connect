@@ -65,8 +65,12 @@ describe('peer manifest pins the verified DSH cores', () => {
    * #74's lesson on top of it: pi-ai must NOT be a dual-arm range. An
    * in-place upgrade from a 0.6.x-era pnpm profile keeps satisfying
    * `^0.85.1 || ^0.87.1` with the old 0.85.1 install, reproducing #69's
-   * two-generation mixing against an rc.2 host that ships 0.87.1. The
-   * `^0.87.1`-only range forces the resolver to move it.
+   * two-generation mixing against an rc.2 host that ships 0.87.1.
+   *
+   * #92 extended that lesson one step further: even the caret-free `^0.87.1`
+   * peer range was not enough, because a peer is only a claim about what the
+   * *installer* should provide. pi-ai is therefore a pinned regular
+   * dependency now; the assertion below pins that shape.
    */
   const DSH_SERVICE_PEERS = [
     '@deepseek-ai/dsh-atomic-write',
@@ -87,10 +91,27 @@ describe('peer manifest pins the verified DSH cores', () => {
     }
   })
 
-  it('pi-ai admits only the generation the rc.2 host ships', () => {
+  it('pi-ai is a pinned runtime dependency, not a peer', () => {
     const pkg = JSON.parse(
       readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-    ) as { peerDependencies: Record<string, string> }
-    expect(pkg.peerDependencies['@earendil-works/pi-ai']).toBe('^0.87.1')
+    ) as {
+      dependencies?: Record<string, string>
+      peerDependencies: Record<string, string>
+      devDependencies: Record<string, string>
+    }
+    // #92's lesson, on top of #74's: a peer declaration cannot survive a
+    // hoisted profile. With `nodeLinker: hoisted` and `autoInstallPeers:
+    // false`, no install claims our peer, so a co-installed plugin's older
+    // pi-ai at the profile root wins bare-specifier resolution and the plugin
+    // loads the wrong generation. A regular dependency installs beside the
+    // plugin and resolves first, whatever the profile root holds.
+    expect(pkg.dependencies?.['@earendil-works/pi-ai']).toBe('0.87.1')
+    expect(
+      pkg.peerDependencies['@earendil-works/pi-ai'],
+      'pi-ai must not also be a peer: a peer declaration is what allowed the hoisted copy to win',
+    ).toBeUndefined()
+    // The dev entry keeps local builds and tests on the same generation, and
+    // stays exact so no caret can widen the supported set by itself.
+    expect(pkg.devDependencies['@earendil-works/pi-ai']).toBe('0.87.1')
   })
 })
