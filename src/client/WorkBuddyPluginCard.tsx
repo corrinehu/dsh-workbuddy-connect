@@ -230,7 +230,6 @@ const noticeStyle: CSSProperties = { display: 'flex', flexDirection: 'column', g
 const noticeDetailStyle: CSSProperties = { fontSize: 12, lineHeight: '16px', opacity: 0.8 }
 const urgentNoticeStyle: CSSProperties = { background: 'var(--dsw-alias-state-warn-tertiary, #fff4e5)', borderColor: 'var(--dsw-alias-state-warn-primary, #d97706)', color: 'var(--dsw-alias-label-primary)' }
 const warnNoticeStyle: CSSProperties = { background: 'var(--dsw-alias-bg-l2, #f6f7f9)', borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-primary)' }
-const expiredNoticeStyle: CSSProperties = { background: 'var(--dsw-alias-bg-l2, #f6f7f9)', borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-tertiary)' }
 const quotaListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 18, paddingTop: 2 }
 const quotaGroupStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 }
 const quotaTitleStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '20px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
@@ -383,7 +382,11 @@ function formatCycleReset(time: string): string {
  * The total alone cannot express this: a package expiring in an hour and one
  * expiring next month both render as "500 credit", so a user watching only the
  * total loses the first one silently. The banner names the amount, the package
- * count and the soonest expiry, and escalates 7d → 24h → already-lapsed.
+ * count and the soonest expiry, and escalates 7d → 24h.
+ *
+ * Only future horizons are covered: the billing query behind this returns
+ * `valid` + `usedUp` packages from the current time forward, so an
+ * already-lapsed package never reaches here.
  *
  * Renders nothing when the upstream reported no end times at all — absence of
  * expiry data is not evidence that nothing expires, so the component stays
@@ -393,7 +396,7 @@ function ExpiryNotice({ expiry, t }: {
   expiry: WorkBuddyWebCreditExpiry
   t: WorkBuddyPluginCardInjected['t']
 }): React.ReactNode {
-  const { expired, within24h, within7d } = expiry
+  const { within24h, within7d } = expiry
   let message: string | undefined
   let soonest: number | undefined
   let tone: CSSProperties
@@ -411,14 +414,6 @@ function ExpiryNotice({ expiry, t }: {
     })
     soonest = within7d.earliestEndTimeMs
     tone = warnNoticeStyle
-  } else if (expired.packages > 0) {
-    // Reported last: a live expiry the user can still act on outranks a lapsed
-    // one they cannot, even though the lapsed amount may be larger.
-    message = t('expiryWarningExpired', {
-      total: formatNumber(Math.round(expired.total * 100) / 100),
-      packages: String(expired.packages),
-    })
-    tone = expiredNoticeStyle
   } else {
     return null
   }

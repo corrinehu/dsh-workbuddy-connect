@@ -151,12 +151,15 @@ export interface WorkBuddyWebExpiringCredits {
  *
  * Only present when the upstream actually reported end times — a card must not
  * read "no expiry data" as "nothing expires soon".
+ *
+ * Future horizons only: the billing query behind this covers `valid` + `usedUp`
+ * packages from the current time forward, so a lapsed package is never in the
+ * set and has no bucket here.
  */
 export interface WorkBuddyWebCreditExpiry {
   within24h: WorkBuddyWebExpiringCredits
   within3d: WorkBuddyWebExpiringCredits
   within7d: WorkBuddyWebExpiringCredits
-  expired: WorkBuddyWebExpiringCredits
 }
 
 /** Aggregated credit answer rendered by the plugin card. */

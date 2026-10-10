@@ -309,6 +309,41 @@ describe('WorkBuddyUpstreamClient.fetchCredits', () => {
       expect(credits.expiry).toBeUndefined()
     })
 
+    it('omits endTimeMs for a stamp that is not a real calendar moment', async () => {
+      // `Date` rolls overflowing fields forward instead of rejecting them, so a
+      // shape-valid but impossible stamp would otherwise be read as a confident
+      // nearby date. Every one of these must come back as "unknown".
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'non-leap', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-02-29 10:00:00' },
+        { PackageName: 'feb-30', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-02-30 10:00:00' },
+        { PackageName: 'month-13', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-13-01 10:00:00' },
+        { PackageName: 'month-00', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-00-15 10:00:00' },
+        { PackageName: 'apr-31', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-04-31 10:00:00' },
+        { PackageName: 'hour-25', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-01-01 25:00:00' },
+        { PackageName: 'minute-60', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-01-01 10:60:00' },
+        { PackageName: 'second-99', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2026-01-01 10:00:99' },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      for (const account of credits.accounts) expect(account.endTimeMs).toBeUndefined()
+      // With every stamp rejected, there is no expiry data to summarise.
+      expect(credits.expiry).toBeUndefined()
+    })
+
+    it('still reads a real leap day', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'leap', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '2028-02-29 10:00:00' },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      const end = credits.accounts[0]!.endTimeMs
+      expect(end).toBeTypeOf('number')
+      const parsed = new Date(end!)
+      expect(parsed.getFullYear()).toBe(2028)
+      expect(parsed.getMonth()).toBe(1)
+      expect(parsed.getDate()).toBe(29)
+    })
+
     it('buckets credit by horizon and only counts positive balances', async () => {
       vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
         { PackageName: 'soon', CycleCapacitySize: 100, CycleCapacityRemain: 10, CycleEndTime: at(2 * HOUR) },
@@ -329,17 +364,23 @@ describe('WorkBuddyUpstreamClient.fetchCredits', () => {
       expect(credits.total).toBe(100)
     })
 
-    it('separates already-lapsed credit from credit still to come', async () => {
+    it('keeps a lapsed package out of every future horizon', async () => {
+      // The personal billing query filters `Status: [0, 3]` from the current time
+      // forward, so a lapsed package should not arrive here at all. This pins the
+      // guard that keeps one from being read as "expiring within 24 hours" if it
+      // ever did: `end - now` is negative, so a naive forward test would match
+      // every horizon at once.
       vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
         { PackageName: 'lapsed', CycleCapacitySize: 100, CycleCapacityRemain: 25, CycleEndTime: at(-1 * HOUR) },
         { PackageName: 'live', CycleCapacitySize: 100, CycleCapacityRemain: 5, CycleEndTime: at(30 * DAY) },
       ]))))
 
       const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
-      expect(credits.expiry!.expired).toMatchObject({ total: 25, packages: 1 })
-      // A lapsed package is still listed as credit, so it still counts toward
-      // the total — which is exactly why the card has to warn about it.
       expect(credits.expiry!.within24h).toMatchObject({ total: 0, packages: 0 })
+      expect(credits.expiry!.within3d).toMatchObject({ total: 0, packages: 0 })
+      expect(credits.expiry!.within7d).toMatchObject({ total: 0, packages: 0 })
+      // Its balance is still part of the raw total: this PR does not change how
+      // `total` is summed, only what the card chooses to warn about.
       expect(credits.total).toBe(30)
     })
 

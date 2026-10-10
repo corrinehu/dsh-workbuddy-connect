@@ -110,12 +110,16 @@ export interface WorkBuddyCreditAccount {
   /**
    * When the package's own cycle ends, in epoch milliseconds.
    *
-   * The upstream has always sent this (`CycleEndTime`, a `YYYY-MM-DD
-   * HH:mm:ss` string in the account's local zone) and the query itself already
-   * filters on `PackageEndTimeRange`, but the field used to be dropped here —
-   * so a card could show "500 credit" for a package expiring in an hour with
-   * nothing to distinguish it from one expiring next month. Absent when the
-   * upstream omits or malforms it, which must never read as "no expiry".
+   * The upstream has always sent this (`CycleEndTime`, a zone-less
+   * `YYYY-MM-DD HH:mm:ss` string) and the query itself already filters on
+   * `PackageEndTimeRange`, but the field used to be dropped here — so a card
+   * could show "500 credit" for a package expiring in an hour with nothing to
+   * distinguish it from one expiring next month. Absent when the upstream omits
+   * or malforms it, which must never read as "no expiry".
+   *
+   * The zone the upstream means is **not established**: reading the string as
+   * the running machine's local time follows the official desktop client (see
+   * {@link parseCycleEndTime}), and is not a claim about the account's zone.
    */
   endTimeMs?: number
 }
@@ -135,15 +139,19 @@ export interface WorkBuddyExpiringCredits {
  *
  * Thresholds are calendar-ish (24h / 3d / 7d) rather than "this month": a package
  * expiring at 08:00 tomorrow is not helped by a monthly average, and the upstream
- * genuinely staggers expiries per package — a real account here had 37 packages
- * spread over five weeks.
+ * genuinely staggers expiries per package.
+ *
+ * Only *future* horizons are reported. An already-lapsed package is deliberately
+ * **not** summarised here: the personal billing query this feeds filters
+ * `Status: [0, 3]` (`valid` + `usedUp`) from the current time forward, while the
+ * upstream marks a lapsed package `Status: 2` (`expired`) — a status this query
+ * never returns. Historical expiry would need its own query, which is out of
+ * scope.
  */
 export interface WorkBuddyCreditExpiry {
   within24h: WorkBuddyExpiringCredits
   within3d: WorkBuddyExpiringCredits
   within7d: WorkBuddyExpiringCredits
-  /** Packages already past their end time but still carrying credit. */
-  expired: WorkBuddyExpiringCredits
 }
 
 /** Aggregated credit answer for one credential. */
@@ -626,23 +634,40 @@ export interface WorkBuddyUpstreamClientOptions {
 /**
  * Parse the billing response's `CycleEndTime` into epoch milliseconds.
  *
- * The upstream sends a zone-less local timestamp (`YYYY-MM-DD HH:mm:ss`), which
- * `Date` would otherwise read as UTC or reject outright depending on the
- * runtime. Reading it as local time matches how the value is produced: the card
- * compares it against the user's own clock, and the expiry it describes is a
- * wall-clock moment on the account, not an instant in UTC.
+ * The upstream sends a zone-less timestamp (`YYYY-MM-DD HH:mm:ss`). This reads it
+ * as the running machine's local time, which is what the official desktop client
+ * does — it feeds the same field straight to `new Date(value).getTime()`. That
+ * makes the plugin agree with the app on the same machine; it is **not** evidence
+ * of which zone the server or the account uses, which remains unestablished.
  *
- * @returns Epoch milliseconds, or undefined when absent or unparseable.
+ * A naive read does mean a machine in a different zone than the account's gets a
+ * shifted instant. That is accepted here rather than guessed at: inventing an
+ * offset would be asserting a zone nobody has verified.
+ *
+ * @returns Epoch milliseconds, or undefined when absent, malformed, or not a real
+ * calendar moment (see the round-trip check below).
  */
 function parseCycleEndTime(value: unknown): number | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined
   const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/u.exec(value.trim())
   if (match === null) return undefined
   const [, y, mo, d, h, mi, s] = match
-  const parsed = new Date(
-    Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s),
-  ).getTime()
-  return Number.isFinite(parsed) ? parsed : undefined
+  const parts = [y, mo, d, h, mi, s].map(Number)
+  const [year, month, day, hour, minute, second] = parts as
+    [number, number, number, number, number, number]
+  const date = new Date(year, month - 1, day, hour, minute, second)
+  const parsed = date.getTime()
+  if (!Number.isFinite(parsed)) return undefined
+  // `Date` rolls overflowing fields forward instead of rejecting them: Feb 30
+  // becomes Mar 2, month 13 becomes January of the next year, hour 25 becomes
+  // 01:00 the next day. The shape regex above cannot catch that, so compare every
+  // field back to what was asked for. A mismatch means the stamp is not a real
+  // moment, and must read as "unknown" rather than as a confident nearby date.
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
+    || date.getHours() !== hour || date.getMinutes() !== minute || date.getSeconds() !== second) {
+    return undefined
+  }
+  return parsed
 }
 
 /** Empty bucket, used whenever no account qualifies. */
@@ -651,9 +676,12 @@ const NO_EXPIRING_CREDIT: WorkBuddyExpiringCredits = { total: 0, packages: 0 }
 /**
  * Sum the credit lapsing within `horizonMs` of `nowMs`.
  *
- * Only positive balances count: a lapsed package with nothing left is not a
- * loss, and including it would make every long-lived account look permanently
- * at risk. Only *future* expiries count too — see {@link expiredWithin}.
+ * Only positive balances count: a package with nothing left is not a loss, and
+ * including it would make every long-lived account look permanently at risk.
+ * Only *future* expiries count too — a package already past its end time would
+ * otherwise satisfy every forward horizon at once (`end - now` is negative,
+ * hence "within 24 hours"), making a long-dead package look permanently
+ * imminent. See {@link WorkBuddyCreditExpiry} for why the past is not reported.
  */
 function expiringWithin(
   accounts: readonly WorkBuddyCreditAccount[],
@@ -661,21 +689,6 @@ function expiringWithin(
   horizonMs: number,
 ): WorkBuddyExpiringCredits {
   return sumExpiring(accounts, (end) => end > nowMs && end - nowMs <= horizonMs)
-}
-
-/**
- * Sum the credit whose package has already lapsed but still carries a balance.
- *
- * Kept apart from {@link expiringWithin} because the two answer different
- * questions, and a lapsed package would otherwise satisfy every forward-looking
- * horizon at once (`end - now` is negative, hence "within 24 hours") — making a
- * long-dead package look permanently imminent.
- */
-function expiredWithin(
-  accounts: readonly WorkBuddyCreditAccount[],
-  nowMs: number,
-): WorkBuddyExpiringCredits {
-  return sumExpiring(accounts, (end) => end <= nowMs)
 }
 
 /** Shared accumulator over accounts whose end time passes `matches`. */
@@ -721,9 +734,6 @@ function summariseExpiry(
       within24h: expiringWithin(accounts, nowMs, DAY),
       within3d: expiringWithin(accounts, nowMs, 3 * DAY),
       within7d: expiringWithin(accounts, nowMs, 7 * DAY),
-      // Expiry in the past is worth surfacing too: the balance is still listed
-      // as credit, so a user reading only the total would over-count it.
-      expired: expiredWithin(accounts, nowMs),
     },
   }
 }
