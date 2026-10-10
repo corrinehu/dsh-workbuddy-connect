@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
+import type { WorkBuddyWebCreditExpiry } from '../status-paths.ts'
 import type { WorkBuddySignedOutReasonCode, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -220,6 +221,16 @@ const rowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justify
 const statusStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 9, fontSize: 15, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }
 const buttonStyle: CSSProperties = { boxSizing: 'border-box', minHeight: 34, padding: '6px 14px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 18, background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', font: 'inherit', fontSize: 14, cursor: 'pointer' }
 const errorStyle: CSSProperties = { ...bodyStyle, color: 'var(--dsw-alias-state-error-primary)' }
+/*
+ * Expiry banner. Reads as an advisory, not an error: the account works fine,
+ * the credit is simply about to lapse. Tones escalate by urgency so the 24-hour
+ * case cannot be mistaken for the 7-day one at a glance.
+ */
+const noticeStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2, padding: '10px 12px', borderRadius: 8, border: '1px solid', fontSize: 13, lineHeight: '18px' }
+const noticeDetailStyle: CSSProperties = { fontSize: 12, lineHeight: '16px', opacity: 0.8 }
+const urgentNoticeStyle: CSSProperties = { background: 'var(--dsw-alias-state-warn-tertiary, #fff4e5)', borderColor: 'var(--dsw-alias-state-warn-primary, #d97706)', color: 'var(--dsw-alias-label-primary)' }
+const warnNoticeStyle: CSSProperties = { background: 'var(--dsw-alias-bg-l2, #f6f7f9)', borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-primary)' }
+const expiredNoticeStyle: CSSProperties = { background: 'var(--dsw-alias-bg-l2, #f6f7f9)', borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-tertiary)' }
 const quotaListStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 18, paddingTop: 2 }
 const quotaGroupStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 }
 const quotaTitleStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '20px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
@@ -364,6 +375,61 @@ function formatCycleReset(time: string): string {
   const parsed = Date.parse(time)
   if (!Number.isNaN(parsed)) return formatTime(parsed)
   return time
+}
+
+/**
+ * A warning that credit is about to lapse.
+ *
+ * The total alone cannot express this: a package expiring in an hour and one
+ * expiring next month both render as "500 credit", so a user watching only the
+ * total loses the first one silently. The banner names the amount, the package
+ * count and the soonest expiry, and escalates 7d → 24h → already-lapsed.
+ *
+ * Renders nothing when the upstream reported no end times at all — absence of
+ * expiry data is not evidence that nothing expires, so the component stays
+ * silent rather than reassuring.
+ */
+function ExpiryNotice({ expiry, t }: {
+  expiry: WorkBuddyWebCreditExpiry
+  t: WorkBuddyPluginCardInjected['t']
+}): React.ReactNode {
+  const { expired, within24h, within7d } = expiry
+  let message: string | undefined
+  let soonest: number | undefined
+  let tone: CSSProperties
+  if (within24h.packages > 0) {
+    message = t('expiryWarningSoon', {
+      total: formatNumber(Math.round(within24h.total * 100) / 100),
+      packages: String(within24h.packages),
+    })
+    soonest = within24h.earliestEndTimeMs
+    tone = urgentNoticeStyle
+  } else if (within7d.packages > 0) {
+    message = t('expiryWarningWeek', {
+      total: formatNumber(Math.round(within7d.total * 100) / 100),
+      packages: String(within7d.packages),
+    })
+    soonest = within7d.earliestEndTimeMs
+    tone = warnNoticeStyle
+  } else if (expired.packages > 0) {
+    // Reported last: a live expiry the user can still act on outranks a lapsed
+    // one they cannot, even though the lapsed amount may be larger.
+    message = t('expiryWarningExpired', {
+      total: formatNumber(Math.round(expired.total * 100) / 100),
+      packages: String(expired.packages),
+    })
+    tone = expiredNoticeStyle
+  } else {
+    return null
+  }
+  return (
+    <div style={{ ...noticeStyle, ...tone }} role="status">
+      <span>{message}</span>
+      {soonest === undefined
+        ? null
+        : <span style={noticeDetailStyle}>{t('expiryExpiresAt', { time: formatTime(soonest) })}</span>}
+    </div>
+  )
 }
 
 /**
@@ -1192,6 +1258,11 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                     <div style={tabPanelStyle}>
                       {status.credits === undefined ? null : (
                         <div style={quotaListStyle}>
+                          {/* Ahead of the total: a user who reads only the first
+                              line must see the amount about to lapse. */}
+                          {status.credits.expiry === undefined
+                            ? null
+                            : <ExpiryNotice expiry={status.credits.expiry} t={t} />}
                           <div style={rowStyle}>
                             <h3 style={quotaTitleStyle}>{t('creditsHeading')}</h3>
                             {/* `unlimited` first: the placeholder total is 0 and

@@ -132,6 +132,31 @@ export interface WorkBuddyWebCreditAccount {
   remain: number
   size: number
   unlimited?: true
+  /** When the package lapses, in epoch milliseconds; absent when unknown. */
+  endTimeMs?: number
+}
+
+/** Credit lapsing inside one horizon, as the card reports it. */
+export interface WorkBuddyWebExpiringCredits {
+  /** Sum of the contributing packages' remaining credit. */
+  total: number
+  /** How many packages contribute. */
+  packages: number
+  /** Soonest expiry among them, epoch milliseconds. */
+  earliestEndTimeMs?: number
+}
+
+/**
+ * Credit at risk, bucketed by horizon.
+ *
+ * Only present when the upstream actually reported end times — a card must not
+ * read "no expiry data" as "nothing expires soon".
+ */
+export interface WorkBuddyWebCreditExpiry {
+  within24h: WorkBuddyWebExpiringCredits
+  within3d: WorkBuddyWebExpiringCredits
+  within7d: WorkBuddyWebExpiringCredits
+  expired: WorkBuddyWebExpiringCredits
 }
 
 /** Aggregated credit answer rendered by the plugin card. */
@@ -140,6 +165,8 @@ export interface WorkBuddyWebCredits {
   accounts: readonly WorkBuddyWebCreditAccount[]
   unlimited?: true
   cycleResetTime?: string
+  /** Credit lapsing soon, for the card's warning banner. */
+  expiry?: WorkBuddyWebCreditExpiry
 }
 
 /** Billing convenience facts for one model, rendered as card badges. */

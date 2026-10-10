@@ -107,6 +107,43 @@ export interface WorkBuddyCreditAccount {
   remain: number
   size: number
   unlimited?: true
+  /**
+   * When the package's own cycle ends, in epoch milliseconds.
+   *
+   * The upstream has always sent this (`CycleEndTime`, a `YYYY-MM-DD
+   * HH:mm:ss` string in the account's local zone) and the query itself already
+   * filters on `PackageEndTimeRange`, but the field used to be dropped here —
+   * so a card could show "500 credit" for a package expiring in an hour with
+   * nothing to distinguish it from one expiring next month. Absent when the
+   * upstream omits or malforms it, which must never read as "no expiry".
+   */
+  endTimeMs?: number
+}
+
+/** Credit whose package expires within a horizon the user should act on. */
+export interface WorkBuddyExpiringCredits {
+  /** Sum of {@link WorkBuddyCreditAccount.remain} over the window. */
+  total: number
+  /** How many packages contribute to {@link total}. */
+  packages: number
+  /** The soonest `endTimeMs` among them. */
+  earliestEndTimeMs?: number
+}
+
+/**
+ * Credit at risk, bucketed by how soon it lapses.
+ *
+ * Thresholds are calendar-ish (24h / 3d / 7d) rather than "this month": a package
+ * expiring at 08:00 tomorrow is not helped by a monthly average, and the upstream
+ * genuinely staggers expiries per package — a real account here had 37 packages
+ * spread over five weeks.
+ */
+export interface WorkBuddyCreditExpiry {
+  within24h: WorkBuddyExpiringCredits
+  within3d: WorkBuddyExpiringCredits
+  within7d: WorkBuddyExpiringCredits
+  /** Packages already past their end time but still carrying credit. */
+  expired: WorkBuddyExpiringCredits
 }
 
 /** Aggregated credit answer for one credential. */
@@ -125,6 +162,13 @@ export interface WorkBuddyCredits {
    */
   unlimited?: true
   cycleResetTime?: string
+  /**
+   * Credit lapsing soon, so a card can warn instead of only reporting a total.
+   *
+   * Absent when no account carried a usable end time — the plugin must not
+   * claim "nothing expires soon" on the strength of data it never received.
+   */
+  expiry?: WorkBuddyCreditExpiry
 }
 
 /** Token refresh answer; fields the upstream omits stay absent. */
@@ -580,6 +624,111 @@ export interface WorkBuddyUpstreamClientOptions {
 }
 
 /**
+ * Parse the billing response's `CycleEndTime` into epoch milliseconds.
+ *
+ * The upstream sends a zone-less local timestamp (`YYYY-MM-DD HH:mm:ss`), which
+ * `Date` would otherwise read as UTC or reject outright depending on the
+ * runtime. Reading it as local time matches how the value is produced: the card
+ * compares it against the user's own clock, and the expiry it describes is a
+ * wall-clock moment on the account, not an instant in UTC.
+ *
+ * @returns Epoch milliseconds, or undefined when absent or unparseable.
+ */
+function parseCycleEndTime(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/u.exec(value.trim())
+  if (match === null) return undefined
+  const [, y, mo, d, h, mi, s] = match
+  const parsed = new Date(
+    Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s),
+  ).getTime()
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+/** Empty bucket, used whenever no account qualifies. */
+const NO_EXPIRING_CREDIT: WorkBuddyExpiringCredits = { total: 0, packages: 0 }
+
+/**
+ * Sum the credit lapsing within `horizonMs` of `nowMs`.
+ *
+ * Only positive balances count: a lapsed package with nothing left is not a
+ * loss, and including it would make every long-lived account look permanently
+ * at risk. Only *future* expiries count too — see {@link expiredWithin}.
+ */
+function expiringWithin(
+  accounts: readonly WorkBuddyCreditAccount[],
+  nowMs: number,
+  horizonMs: number,
+): WorkBuddyExpiringCredits {
+  return sumExpiring(accounts, (end) => end > nowMs && end - nowMs <= horizonMs)
+}
+
+/**
+ * Sum the credit whose package has already lapsed but still carries a balance.
+ *
+ * Kept apart from {@link expiringWithin} because the two answer different
+ * questions, and a lapsed package would otherwise satisfy every forward-looking
+ * horizon at once (`end - now` is negative, hence "within 24 hours") — making a
+ * long-dead package look permanently imminent.
+ */
+function expiredWithin(
+  accounts: readonly WorkBuddyCreditAccount[],
+  nowMs: number,
+): WorkBuddyExpiringCredits {
+  return sumExpiring(accounts, (end) => end <= nowMs)
+}
+
+/** Shared accumulator over accounts whose end time passes `matches`. */
+function sumExpiring(
+  accounts: readonly WorkBuddyCreditAccount[],
+  matches: (endTimeMs: number) => boolean,
+): WorkBuddyExpiringCredits {
+  let total = 0
+  let packages = 0
+  let earliestEndTimeMs: number | undefined
+  for (const account of accounts) {
+    const end = account.endTimeMs
+    if (end === undefined || account.remain <= 0) continue
+    if (!matches(end)) continue
+    total += account.remain
+    packages += 1
+    if (earliestEndTimeMs === undefined || end < earliestEndTimeMs) earliestEndTimeMs = end
+  }
+  if (packages === 0) return NO_EXPIRING_CREDIT
+  return {
+    total,
+    packages,
+    ...earliestEndTimeMs === undefined ? {} : { earliestEndTimeMs },
+  }
+}
+
+/**
+ * Bucket an account's credit by how soon it lapses.
+ *
+ * Returns undefined when no account carried a usable end time, so a caller can
+ * tell "nothing is expiring" apart from "we never learned when anything
+ * expires" — the second must not render as reassurance.
+ */
+function summariseExpiry(
+  accounts: readonly WorkBuddyCreditAccount[],
+  nowMs: number,
+): { expiry?: WorkBuddyCreditExpiry } {
+  if (!accounts.some((account) => account.endTimeMs !== undefined)) return {}
+  const HOUR = 3600 * 1000
+  const DAY = 24 * HOUR
+  return {
+    expiry: {
+      within24h: expiringWithin(accounts, nowMs, DAY),
+      within3d: expiringWithin(accounts, nowMs, 3 * DAY),
+      within7d: expiringWithin(accounts, nowMs, 7 * DAY),
+      // Expiry in the past is worth surfacing too: the balance is still listed
+      // as credit, so a user reading only the total would over-count it.
+      expired: expiredWithin(accounts, nowMs),
+    },
+  }
+}
+
+/**
  * Upstream HTTP client. One instance serves the whole plugin; requests take
  * the credential explicitly so token refreshes apply on the next call.
  *
@@ -862,13 +1011,15 @@ export class WorkBuddyUpstreamClient {
       else remain = capacityRemain
       if (remain < 0) remain = 0
       total += remain
+      const endTimeMs = parseCycleEndTime(account['CycleEndTime'])
       accounts.push({
         packageName: typeof account['PackageName'] === 'string' ? account['PackageName'] : '(unnamed)',
         remain,
         size: size > 0 ? size : numberField('CapacitySize'),
+        ...endTimeMs === undefined ? {} : { endTimeMs },
       })
     }
-    return { total, accounts }
+    return { total, accounts, ...summariseExpiry(accounts, now.getTime()) }
   }
 
   /**

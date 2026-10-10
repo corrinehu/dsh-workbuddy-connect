@@ -259,6 +259,104 @@ describe('WorkBuddyUpstreamClient.fetchCredits', () => {
     expect(credits.accounts[0]!.packageName).toBe('valid')
   })
 
+  /**
+   * Expiry coverage. The upstream has always sent `CycleEndTime`; these pin the
+   * parsing, the bucketing, and — importantly — the two states that must not be
+   * confused: "no end times reported" versus "nothing expiring".
+   */
+  describe('package expiry', () => {
+    /** A local-time stamp the same shape the upstream sends. */
+    const at = (offsetMs: number): string => {
+      const d = new Date(Date.now() + offsetMs)
+      const p = (n: number): string => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+    }
+    const HOUR = 3600 * 1000
+    const DAY = 24 * HOUR
+
+    it('reads CycleEndTime into endTimeMs', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'pkg', CycleCapacitySize: 100, CycleCapacityRemain: 40, CycleEndTime: at(2 * DAY) },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      const end = credits.accounts[0]!.endTimeMs
+      expect(end).toBeTypeOf('number')
+      // Same wall-clock moment, to the second.
+      expect(Math.abs((end ?? 0) - (Date.now() + 2 * DAY))).toBeLessThan(2000)
+    })
+
+    it('omits endTimeMs for an absent or malformed stamp', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'no-field', CycleCapacitySize: 10, CycleCapacityRemain: 5 },
+        { PackageName: 'empty', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: '' },
+        { PackageName: 'garbage', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: 'whenever' },
+        { PackageName: 'numeric', CycleCapacitySize: 10, CycleCapacityRemain: 5, CycleEndTime: 1791678478000 },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      // A malformed stamp must read as "unknown", never as "never expires".
+      for (const account of credits.accounts) expect(account.endTimeMs).toBeUndefined()
+    })
+
+    it('reports no expiry summary when the upstream sent no end times', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'pkg', CycleCapacitySize: 100, CycleCapacityRemain: 40 },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      // Absence of data is not evidence of safety, so the field stays unset.
+      expect(credits.expiry).toBeUndefined()
+    })
+
+    it('buckets credit by horizon and only counts positive balances', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'soon', CycleCapacitySize: 100, CycleCapacityRemain: 10, CycleEndTime: at(2 * HOUR) },
+        { PackageName: 'mid', CycleCapacitySize: 100, CycleCapacityRemain: 20, CycleEndTime: at(2 * DAY) },
+        { PackageName: 'week', CycleCapacitySize: 100, CycleCapacityRemain: 30, CycleEndTime: at(5 * DAY) },
+        { PackageName: 'later', CycleCapacitySize: 100, CycleCapacityRemain: 40, CycleEndTime: at(20 * DAY) },
+        // Zero balance inside the window must not inflate the at-risk number.
+        { PackageName: 'spent', CycleCapacitySize: 100, CycleCapacityRemain: 0, CycleEndTime: at(1 * HOUR) },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      const expiry = credits.expiry
+      expect(expiry).toBeDefined()
+      expect(expiry!.within24h).toMatchObject({ total: 10, packages: 1 })
+      expect(expiry!.within3d).toMatchObject({ total: 30, packages: 2 })
+      expect(expiry!.within7d).toMatchObject({ total: 60, packages: 3 })
+      // The 20-day package is outside every window and must not be counted.
+      expect(credits.total).toBe(100)
+    })
+
+    it('separates already-lapsed credit from credit still to come', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'lapsed', CycleCapacitySize: 100, CycleCapacityRemain: 25, CycleEndTime: at(-1 * HOUR) },
+        { PackageName: 'live', CycleCapacitySize: 100, CycleCapacityRemain: 5, CycleEndTime: at(30 * DAY) },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      expect(credits.expiry!.expired).toMatchObject({ total: 25, packages: 1 })
+      // A lapsed package is still listed as credit, so it still counts toward
+      // the total — which is exactly why the card has to warn about it.
+      expect(credits.expiry!.within24h).toMatchObject({ total: 0, packages: 0 })
+      expect(credits.total).toBe(30)
+    })
+
+    it('names the soonest expiry for each bucket', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(billingEnvelope([
+        { PackageName: 'b', CycleCapacitySize: 10, CycleCapacityRemain: 1, CycleEndTime: at(3 * DAY) },
+        { PackageName: 'a', CycleCapacitySize: 10, CycleCapacityRemain: 1, CycleEndTime: at(4 * DAY) },
+      ]))))
+
+      const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
+      const earliest = credits.expiry!.within7d.earliestEndTimeMs
+      expect(earliest).toBeTypeOf('number')
+      // 'b' expires first and must be the one named.
+      expect(Math.abs((earliest ?? 0) - (Date.now() + 3 * DAY))).toBeLessThan(2000)
+    })
+  })
+
   it('throws when the upstream business code is non-zero', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(
       JSON.stringify({ code: 1, msg: 'billing error' }),
