@@ -16,6 +16,19 @@
  *   `window.confirm`. Probing spends real credit, so a confirmation stays — but
  *   it belongs next to the thing it acts on, sized to one line plus two small
  *   buttons.
+ * - a **credit badge** (#99): the account's remaining balance as one tiny
+ *   annotation on the same seat, read from the same status document as the
+ *   probe entry. Hidden whenever the document has no answer (signed-out,
+ *   error, missing `credits`); zero is a real balance and is shown, `unlimited`
+ *   renders as ∞ rather than as 0. The badge is why the control stays mounted
+ *   for non-candidate models: the probe entry alone is what disappears for
+ *   them.
+ * - a **↻ beside the badge** is the only re-read after the mount fetch: there
+ *   is no interval and no focus polling, because every status GET also queries
+ *   billing upstream and the balance should not refresh behind the user's
+ *   back. A failed manual read hides the balance rather than passing the old
+ *   one off as current; a click also picks up probes started elsewhere, which
+ *   is the reconcile the removed poll used to provide.
  *
  * @module dsh-workbuddy-connect/client/probe-control
  */
@@ -42,10 +55,6 @@ export interface WorkBuddyProbeControlProps extends WorkBuddyPluginCardInjected 
 export function cardVariantFor(provider: string): WorkBuddyCardVariant | undefined {
   return CARD_VARIANTS.find(card => card.id === provider)
 }
-
-/** How often the control re-checks state when the window regains focus. */
-const RECONCILE_MS = 60_000
-
 
 // The host slot's baseline sits a touch high and leaves a full inter-control gap
 // before the model picker. Nudge only this annotation down and inward so it
@@ -83,6 +92,37 @@ const buttonStyle: CSSProperties = {
 const labelStyle: CSSProperties = {
   fontSize: 11,
   lineHeight: '16px',
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+/**
+ * The credit badge (#99). The same annotation register as {@link labelStyle} —
+ * small and dim, on the model name's side of the seat — so a changing balance
+ * reads as a note on the selection, not composer chrome of its own.
+ */
+const creditStyle: CSSProperties = {
+  fontSize: 11,
+  lineHeight: '16px',
+  color: 'var(--dsw-alias-label-tertiary)',
+  whiteSpace: 'nowrap',
+  padding: '0 4px',
+}
+
+/**
+ * The badge's ↻ (#99): the only re-read after the mount fetch. An icon-only
+ * button in the same dim register, so it reads as part of the annotation
+ * rather than a fourth composer control.
+ */
+const refreshStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 20,
+  height: 20,
+  padding: 0,
+  border: 0,
+  borderRadius: 6,
+  background: 'transparent',
   color: 'var(--dsw-alias-label-tertiary)',
 }
 
@@ -206,6 +246,36 @@ function resultFor(status: WorkBuddyWebStatus, model: string): WorkBuddyWebProbe
 }
 
 /**
+ * The credit badge's one line, or `undefined` whenever there is no honest
+ * answer to show (#99).
+ *
+ * Every non-answer collapses to hidden: a signed-out or errored document, a
+ * missing `credits` section (which is also all a `creditsError` leaves behind),
+ * or a total that is not a finite number — the status guard deliberately does
+ * not validate optional fields, so this narrows before reading. Zero is a real
+ * balance and is shown; `unlimited` renders as ∞, never as 0.
+ */
+function creditBadge(
+  status: WorkBuddyWebStatus | undefined,
+  card: WorkBuddyCardVariant,
+  t: WorkBuddyPluginCardInjected['t'],
+): string | undefined {
+  if (status === undefined || status.status !== 'signed-in') return undefined
+  // A document that names a credit error has no trustworthy balance — even in
+  // the malformed case where it also carries a `credits` section.
+  if (status.creditsError !== undefined) return undefined
+  const credits = status.credits
+  if (credits === undefined) return undefined
+  const total = credits.unlimited === true
+    ? '∞'
+    : typeof credits.total === 'number' && Number.isFinite(credits.total)
+      ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(credits.total)
+      : undefined
+  if (total === undefined) return undefined
+  return t('composerCredit', { prefix: card.creditPrefix, total })
+}
+
+/**
  * The one-line tooltip: current state first, then what a click does — the same
  * two-part shape Fast Mode uses.
  *
@@ -263,7 +333,16 @@ function ModelProbe({ model, card, label, t }: {
   // Only an explicit detection response opens a note. Background reads and
   // remounts never replay stored results; no persisted "seen" marks are needed.
   const [note, setNote] = useState<WorkBuddyWebProbeModel>()
+  /**
+   * A manual credit read failed (#99). The balance hides until a later read
+   * succeeds, so the old number can never pose as current; the probe state is
+   * untouched — the two features merely share one document.
+   */
+  const [creditFailed, setCreditFailed] = useState(false)
+  /** Whether a manual credit refresh is in flight, for the ↻'s busy state. */
+  const [refreshing, setRefreshing] = useState(false)
   const inFlight = useRef(false)
+  const refreshingRef = useRef(false)
   const mounted = useRef(false)
   const readSeq = useRef(0)
   const tooltipId = useId()
@@ -272,6 +351,9 @@ function ModelProbe({ model, card, label, t }: {
     const seq = ++readSeq.current
     const response = await fetch(card.statusPath, {
       credentials: 'same-origin',
+      // The balance must not come from any intermediate cache: a manual ↻ is
+      // asking for exactly one fresh billing read.
+      cache: 'no-store',
       headers: { accept: 'application/json' },
       ...(signal === undefined ? {} : { signal }),
     })
@@ -285,26 +367,57 @@ function ModelProbe({ model, card, label, t }: {
      */
     const value: unknown = await response.json().catch(() => undefined)
     if (!isWorkBuddyWebStatus(value)) throw new Error(t('statusResponseInvalid'))
-    if (mounted.current && !signal?.aborted && seq === readSeq.current) setStatus(value)
+    if (mounted.current && !signal?.aborted && seq === readSeq.current) {
+      setStatus(value)
+      setCreditFailed(false)
+    }
   }, [card.statusPath, t])
 
   useEffect(() => {
     mounted.current = true
     const controller = new AbortController()
-    const load = (): void => {
-      void refresh(controller.signal).catch(() => { /* the icon still works without state */ })
-    }
-    load()
-    // Reconcile detections performed in another conversation or in the card.
-    const timer = window.setInterval(load, RECONCILE_MS)
-    window.addEventListener('focus', load)
+    // One read on mount is all the automatic refreshing there is: every status
+    // GET also queries billing upstream, so the balance must not re-read
+    // behind the user's back. Later reads are the ↻ click and the trailing
+    // read after a probe this control started (which the user also clicked).
+    void refresh(controller.signal).catch(() => { /* the icon still works without state */ })
     return () => {
       mounted.current = false
       controller.abort()
-      window.clearInterval(timer)
-      window.removeEventListener('focus', load)
     }
   }, [refresh])
+
+  /**
+   * The ↻'s action (#99): one manual re-read through the same status route.
+   *
+   * The guard is a ref, not the state: two clicks inside one act batch both
+   * see the same stale `refreshing` closure, and only a synchronous check can
+   * keep the second click from sending a second billing read.
+   *
+   * A failure hides the balance (see `creditFailed`) instead of leaving the old
+   * number on screen as though it were fresh — but only when the failed read is
+   * still the newest one (`refresh` bumped `readSeq` for it, and nothing newer
+   * has started since). An out-of-date manual failure racing a successful
+   * probe's trailing read must not hide the fresh balance that just arrived:
+   * `readSeq` is what decides, and `refresh` itself already clears the flag on
+   * any newer successful write.
+   */
+  const checkNow = async (): Promise<void> => {
+    if (refreshingRef.current) return
+    refreshingRef.current = true
+    setRefreshing(true)
+    // The seq this manual read took; `refresh` bumps `readSeq` before awaiting.
+    const seqAtStart = readSeq.current + 1
+    try {
+      await refresh()
+    } catch {
+      // Only hide the balance when this failure is still about the newest read.
+      if (mounted.current && readSeq.current === seqAtStart) setCreditFailed(true)
+    } finally {
+      refreshingRef.current = false
+      if (mounted.current) setRefreshing(false)
+    }
+  }
 
   const probe = status?.status === 'signed-in' ? status.probe : undefined
   const key = status?.status === 'signed-in' ? status.probeKey : undefined
@@ -364,7 +477,13 @@ function ModelProbe({ model, card, label, t }: {
     }
   }
 
-  if (!visible) return null
+  // The badge reads the same status document the probe entry does, so it is
+  // available exactly when a balance was answered — including for models that
+  // have nothing to probe. A failed manual read hides it (never the old number
+  // posing as fresh); the ↻ stays as the retry and is the seat's one re-read
+  // affordance whatever the document says, which is also how the control
+  // recovers from an unreadable first read.
+  const credit = creditFailed ? undefined : creditBadge(status, card, t)
 
   const text = tooltipText(t, model, { busy, result, failed })
   const disabled = busy || probe?.running === true || key === undefined
@@ -380,33 +499,53 @@ function ModelProbe({ model, card, label, t }: {
       onMouseEnter={() => { setTooltipVisible(true) }}
       onMouseLeave={() => { setTooltipVisible(false) }}
     >
+      {credit === undefined ? null : <span style={creditStyle}>{credit}</span>}
+
       <button
         type="button"
-        aria-label={text}
-        aria-describedby={showTooltip ? tooltipId : undefined}
-        aria-busy={busy}
-        aria-expanded={confirming}
-        disabled={disabled}
-        onClick={() => { setConfirming(true) }}
-        onFocus={() => { setTooltipVisible(true) }}
-        onBlur={() => { setTooltipVisible(false) }}
-        style={{ ...buttonStyle, opacity: disabled && !confirming ? 0.6 : 1, cursor: disabled ? 'default' : 'pointer' }}
+        style={{ ...refreshStyle, opacity: refreshing ? 0.6 : 1, cursor: refreshing ? 'default' : 'pointer' }}
+        title={t('composerCreditRefresh')}
+        aria-label={t('composerCreditRefresh')}
+        aria-busy={refreshing}
+        disabled={refreshing}
+        onClick={() => { void checkNow() }}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          strokeWidth="1.6" aria-hidden="true" focusable="false">
-          <circle cx="12" cy="12" r="9" />
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 12 20 4" />
-          <circle cx="12" cy="12" r="1" />
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+          <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+          <path d="M20 4v4h-4" />
         </svg>
-        <span style={labelStyle}>{label}</span>
       </button>
 
-      {showTooltip && (
+      {visible && (
+        <button
+          type="button"
+          aria-label={text}
+          aria-describedby={showTooltip ? tooltipId : undefined}
+          aria-busy={busy}
+          aria-expanded={confirming}
+          disabled={disabled}
+          onClick={() => { setConfirming(true) }}
+          onFocus={() => { setTooltipVisible(true) }}
+          onBlur={() => { setTooltipVisible(false) }}
+          style={{ ...buttonStyle, opacity: disabled && !confirming ? 0.6 : 1, cursor: disabled ? 'default' : 'pointer' }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="1.6" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="9" />
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 12 20 4" />
+            <circle cx="12" cy="12" r="1" />
+          </svg>
+          <span style={labelStyle}>{label}</span>
+        </button>
+      )}
+
+      {visible && showTooltip && (
         <span id={tooltipId} role="tooltip" style={tooltipStyle}>{text}</span>
       )}
 
-      {confirming && (
+      {visible && confirming && (
         <span style={confirmStyle}>
           <span>{t('probeBubbleBody')}</span>
           <span style={confirmRowStyle}>
@@ -420,7 +559,7 @@ function ModelProbe({ model, card, label, t }: {
         </span>
       )}
 
-      {note === undefined ? null : (
+      {visible && note !== undefined && (
         <span role="status" aria-live="polite" style={noteStyle}>
           <span>{noteText(t, note)}</span>
           <button

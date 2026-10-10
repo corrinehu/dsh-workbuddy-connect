@@ -126,10 +126,14 @@ async function tickIntervals(): Promise<void> {
   await act(async () => { for (const handler of handlers) handler() })
 }
 
-/** Fire the window focus listeners, which is how the control re-reads state. */
-async function fireFocus(): Promise<void> {
-  const listeners = [...focusListeners]
-  await act(async () => { for (const listener of listeners) listener() })
+/** Click the seat's \u21bb, which is how the control re-reads state now. */
+async function fireFocus(view: ReactTestRenderer): Promise<void> {
+  const refresh = view.root.findAllByType('button')
+    .find(node => node.props['aria-label'] === en.composerCreditRefresh)
+  // An unreadable document leaves no badge, but the \u21bb renders regardless:
+  // it is the seat's one re-read, and the way the control recovers.
+  if (refresh === undefined) throw new Error('refresh control not rendered')
+  await act(async () => { refresh.props.onClick() })
 }
 
 /** One signed-in status document, as the host sends it. */
@@ -531,7 +535,8 @@ describe('WorkBuddyProbeControl', () => {
     })
   }
 
-  const controlButton = () => view!.root.findAllByType('button')[0]!
+  /** The probe entry: the only control in the seat carrying aria-expanded. */
+  const controlButton = () => view!.root.findAllByType('button').find(node => 'aria-expanded' in node.props)! 
 
   it('#2 survives a status body of literal null without tearing the control down', async () => {
     // `resultFor` dereferences `status.status` on every render, so a null body
@@ -541,14 +546,16 @@ describe('WorkBuddyProbeControl', () => {
     statusReply = { ok: true, body: null }
     await mount()
 
-    expect(view!.toJSON()).toBeNull()
+    // The seat stays mounted (the \u21bb is always available for a manual
+    // re-read); what must hold is that nothing else rendered and nothing threw.
+    expect(view!.root.findAllByType('button').some(node => 'aria-expanded' in node.props)).toBe(false)
     expect(() => view!.root).not.toThrow()
   })
 
   it('#2 recovers on the next readable document', async () => {
     statusReply = { ok: true, body: null }
     await mount()
-    expect(view!.toJSON()).toBeNull()
+    expect(view!.root.findAllByType('button').some(node => 'aria-expanded' in node.props)).toBe(false)
 
     statusReply = {
       ok: true,
@@ -556,7 +563,7 @@ describe('WorkBuddyProbeControl', () => {
         probe: { consent: true, running: false, candidates: ['glm-5.2'], results: [] },
       }),
     }
-    await fireFocus()
+    await fireFocus(view!)
 
     // A control that had crashed on the bad document could never get here: the
     // failed render unmounts the tree and every later read is dropped.
@@ -601,7 +608,7 @@ describe('WorkBuddyProbeControl', () => {
         },
       }),
     }
-    await fireFocus()
+    await fireFocus(view!)
 
     const label = t('probeTooltipVerified', { levels: 'low / high' })
     expect(controlButton().props['aria-label']).toBe(label)
@@ -637,7 +644,7 @@ describe('WorkBuddyProbeControl', () => {
       ok: true,
       body: signedInStatus({ probe: { consent: true, running: false, candidates: ['glm-5.2'], results: [recorded] } }),
     }
-    await fireFocus()
+    await fireFocus(view!)
     expect(controlButton().props['aria-label']).toBe(t('probeTooltipVerified', { levels: 'low / high' }))
 
     // The host clears its results again. The failure was about a run whose
@@ -646,7 +653,7 @@ describe('WorkBuddyProbeControl', () => {
       ok: true,
       body: signedInStatus({ probe: { consent: true, running: false, candidates: ['glm-5.2'], results: [] } }),
     }
-    await fireFocus()
+    await fireFocus(view!)
     expect(controlButton().props['aria-label']).toBe(t('probeTooltipIdle', { model: 'glm-5.2' }))
   })
 

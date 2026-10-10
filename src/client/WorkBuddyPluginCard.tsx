@@ -46,6 +46,12 @@ export interface WorkBuddyCardVariant {
   appName: string
   /** Locale key for "no decryption program is configured" on this product. */
   unavailableKey: WorkBuddySettingsKey
+  /**
+   * The composer credit badge's product prefix: "WB." for CN, "WB AI." for the
+   * international app (#99). Carried on the variant so the composer control
+   * never hardcodes provider ids.
+   */
+  creditPrefix: string
 }
 
 /** CN WorkBuddy; the plugin's long-standing card and default. */
@@ -58,6 +64,7 @@ export const CN_CARD_VARIANT: WorkBuddyCardVariant = {
   probePath: WORKBUDDY_PROBE_PATH,
   appName: 'WorkBuddy',
   unavailableKey: 'assistUnavailableCN',
+  creditPrefix: 'WB.',
 }
 
 /** International WorkBuddy AI. */
@@ -70,6 +77,7 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
   probePath: WORKBUDDY_AI_PROBE_PATH,
   appName: 'WorkBuddy AI',
   unavailableKey: 'assistUnavailableAI',
+  creditPrefix: 'WB AI.',
 }
 
 /** Both cards, in display order. */

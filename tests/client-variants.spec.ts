@@ -196,9 +196,10 @@ describe('composer control provider routing', () => {
   it('posts a detection to the selected provider route only', async () => {
     select('workbuddy-ai', 'glm-5.2')
     await mount()
-    // Confirm, then run.
-    const buttons = view!.root.findAllByType('button')
-    await act(async () => { buttons[0]!.props.onClick() })
+    // Confirm, then run. The probe entry is the only seat control carrying
+    // aria-expanded (the ↻ beside it does not).
+    const probeEntry = view!.root.findAllByType('button').find(node => 'aria-expanded' in node.props)!
+    await act(async () => { probeEntry.props.onClick() })
     const confirm = view!.root.findAllByType('button').find(node => node.children.join('') === en.probeConfirmAction)
     await act(async () => { confirm!.props.onClick() })
     expect(posts()).toHaveLength(1)
