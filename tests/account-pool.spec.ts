@@ -18,7 +18,7 @@
  * `fetch` is stubbed, and only where the check-in path is under test.
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -235,9 +235,9 @@ describe('WorkBuddyAccountPool merge', () => {
     new WorkBuddyAccountPool({ path, hashOf }).merge([credential('u-1', 'AT-1')])
     expect(JSON.parse(readFileSync(path, 'utf8')).version).toBe(1)
     // Windows has no POSIX mode bits, so the assertion is skipped there rather
-    // than asserted vacuously.
+    // than asserted vacuously — on Linux and macOS (both in CI's matrix) it is a
+    // real check that the token-bearing file is not world-readable.
     if (process.platform !== 'win32') {
-      const { statSync } = require('node:fs') as typeof import('node:fs')
       expect(statSync(path).mode & 0o777).toBe(0o600)
     }
   })
