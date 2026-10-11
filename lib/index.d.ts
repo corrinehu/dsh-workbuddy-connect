@@ -1161,6 +1161,17 @@ interface WorkBuddyCredentialSource {
   desktopAuthFormat(): Promise<DesktopAuthFormat>;
   resolvedDesktopAuthPath(): Promise<string | undefined>;
   desktopFilePresent(): Promise<boolean>;
+  /**
+   * Optional: report that the upstream rejected a credential as dead, so a pool
+   * can stop offering it.
+   *
+   * Optional because the single-account store has nothing to rotate to — it
+   * simply has no opinion, and a caller must not have to care which
+   * implementation it holds. The shim calls it only after the upstream has
+   * classified a failure as `session_dead`, which is the one signal that means
+   * "this credential will keep failing until a human acts".
+   */
+  reportDead?(credential: WorkBuddyCredential, reason?: string): boolean;
 }
 //#endregion
 //#region src/catalog.d.ts
