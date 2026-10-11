@@ -13,7 +13,7 @@
  * @module dsh-workbuddy-connect/probe-service
  */
 
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyCredentialSource } from './pool-store.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { probeModel, type ProbeRegion, type ProbeSender, type SentinelFactory } from './probe.ts'
 import { fingerprintModel, type WorkBuddyProbeRecord, type WorkBuddyProbeStore } from './probe-store.ts'
@@ -28,7 +28,7 @@ export type WorkBuddyProbeStatus =
 export interface WorkBuddyProbeServiceOptions {
   store: WorkBuddyProbeStore
   catalog: WorkBuddyCatalog
-  credentials: WorkBuddyCredentialStore
+  credentials: WorkBuddyCredentialSource
   client: WorkBuddyUpstreamClient
   /** Whether probing is permitted at all; consulted before every sweep. */
   consent: () => boolean

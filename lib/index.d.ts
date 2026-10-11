@@ -447,6 +447,16 @@ declare function regionOf(domain: string): WorkBuddyRegion;
  * compatible spelling the upstream accepts.
  */
 declare function prepareChatBody(source: string): string;
+/** What one account's daily check-in attempt concluded. */
+interface WorkBuddyCheckinOutcome {
+  /**
+   * `ok` claimed now · `already` claimed today or not applicable (idempotent)
+   * · `auth` the session is dead and needs a human · `failed` anything else.
+   */
+  status: 'ok' | 'already' | 'auth' | 'failed';
+  /** The upstream's own words, or the transport error; never a token. */
+  detail: string;
+}
 /** Provenance of one successful catalog fetch, surfaced by the status card. */
 interface WorkBuddyCatalogFetch {
   fetchedAtMs: number;
@@ -568,6 +578,29 @@ declare class WorkBuddyUpstreamClient {
    * response body may describe the account's usage.
    */
   private fetchEnterpriseCredits;
+  /**
+   * Claim one account's daily credit grant.
+   *
+   * Returns a classified outcome rather than throwing, because the caller is a
+   * batch loop: one account's dead session must not stop the other forty from
+   * checking in, and the batch report needs a per-account verdict anyway.
+   *
+   * The three-way split of a failure is the whole point:
+   *
+   * - `auth` — the session is dead. Only a human can fix it, so the account is
+   *   reported distinctly instead of being retried forever.
+   * - `already` — idempotent. Counting this as a failure would make a healthy
+   *   pool look broken every day after the first run.
+   * - `failed` — everything else, including transport errors, which are never
+   *   allowed to masquerade as `already` (see `classifyCheckinOutcome`).
+   *
+   * The path differs by realm and that difference is load-bearing: the
+   * international endpoint serves the billing family without the `/v2` prefix
+   * and 404s on the CN spelling, so the global probe tries the bare path first
+   * and falls back — the order the Go gateway (`workbuddy2api`, `cmd/signin`)
+   * established against the live upstream.
+   */
+  dailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinOutcome>;
   /**
    * One probe request: a real streaming chat call carrying the effort under
    * test.
@@ -1109,6 +1142,27 @@ declare class WorkBuddyCredentialStore {
   desktopFilePresent(): Promise<boolean>;
 }
 //#endregion
+//#region src/pool-store.d.ts
+/**
+ * The credential surface a pool resolver wraps.
+ *
+ * Declared structurally rather than as `WorkBuddyCredentialStore` so a test (or
+ * a future store) can stand in without subclassing, and so the resolver never
+ * depends on private members it does not use.
+ */
+interface WorkBuddyCredentialSource {
+  current(): Promise<WorkBuddyCredential | undefined>;
+  resolve(): Promise<WorkBuddyCredential>;
+  status(): Promise<WorkBuddyAuthStatus>;
+  logout(): Promise<void>;
+  setDesktopPath(path: string | undefined): void;
+  desktopAuthPath(): string | undefined;
+  ownAuthPath(): string;
+  desktopAuthFormat(): Promise<DesktopAuthFormat>;
+  resolvedDesktopAuthPath(): Promise<string | undefined>;
+  desktopFilePresent(): Promise<boolean>;
+}
+//#endregion
 //#region src/catalog.d.ts
 /** One model entry the adapter exposes. */
 type WorkBuddyModelInfo = WorkBuddyUpstreamModel;
@@ -1322,7 +1376,7 @@ interface WorkBuddyShim {
 }
 /** Constructor dependencies. */
 interface WorkBuddyShimOptions {
-  store: WorkBuddyCredentialStore;
+  store: WorkBuddyCredentialSource;
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
@@ -1349,7 +1403,7 @@ interface WorkBuddyAdapterOptions {
    */
   region?: WorkBuddyRegion;
   shim: WorkBuddyShim;
-  store: WorkBuddyCredentialStore;
+  store: WorkBuddyCredentialSource;
   catalog: WorkBuddyCatalog;
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined;
@@ -1524,7 +1578,7 @@ type WorkBuddyProbeStatus = {
 interface WorkBuddyProbeServiceOptions {
   store: WorkBuddyProbeStore;
   catalog: WorkBuddyCatalog;
-  credentials: WorkBuddyCredentialStore;
+  credentials: WorkBuddyCredentialSource;
   client: WorkBuddyUpstreamClient;
   /** Whether probing is permitted at all; consulted before every sweep. */
   consent: () => boolean;

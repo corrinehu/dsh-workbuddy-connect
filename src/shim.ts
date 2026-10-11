@@ -18,7 +18,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyCredentialSource } from './pool-store.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { extractDisplayErrorMessage, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
@@ -48,7 +48,7 @@ export interface WorkBuddyShim {
 
 /** Constructor dependencies. */
 export interface WorkBuddyShimOptions {
-  store: WorkBuddyCredentialStore
+  store: WorkBuddyCredentialSource
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger

@@ -14,11 +14,14 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { createHash } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import { resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import { WorkBuddyCredentialStore, type WorkBuddyCredential, type WorkBuddyStoreOptions } from './auth.ts'
+import { WorkBuddyAccountPool, workbuddyPoolPath } from './account-pool.ts'
+import { WorkBuddyPoolCredentialResolver, type WorkBuddyCredentialSource } from './pool-store.ts'
 import { atRestKeyProviderFor, WorkBuddyAtRestKeyProvider } from './desktop-credential-protection.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import { workbuddyCatalogPath, WorkBuddyCatalogStore } from './catalog-store.ts'
@@ -279,7 +282,16 @@ const AI_SECTION: z<Config> = z.object({
 /** One variant's live runtime, assembled by {@link createVariantRuntime}. */
 interface VariantRuntime {
   variant: WorkBuddyVariant
-  store: WorkBuddyCredentialStore
+  /**
+   * The credential surface every consumer reads through: the pool resolver,
+   * which delegates to the single-account store whenever the pool is empty.
+   *
+   * Typed structurally rather than as `WorkBuddyCredentialStore` because the
+   * pool resolver is a peer implementation of the same surface, not a subclass —
+   * and because the probe service and status route only ever call the methods
+   * declared here.
+   */
+  store: WorkBuddyCredentialSource
   client: WorkBuddyUpstreamClient
   catalog: WorkBuddyCatalog
   probeStore: WorkBuddyProbeStore
@@ -394,10 +406,25 @@ function createVariantRuntime(
 ): VariantRuntime {
   const client = new WorkBuddyUpstreamClient()
   const configured = configuredAuthFile(config, variant)
-  const store = new WorkBuddyCredentialStore({
+  const single = new WorkBuddyCredentialStore({
     variant,
     ...configured === undefined ? {} : { desktopPath: configured },
     ...keyProvider === undefined ? {} : { keyProvider },
+    refresh: credential => client.refreshToken(credential),
+  })
+  // The account pool, wrapped around the single-account store. The pool is the
+  // *additive* half of credential resolution: an empty pool delegates every call
+  // to `single`, which is the plugin's long-standing behaviour, so a user who
+  // never imports anything sees no difference at all. A populated pool takes
+  // precedence — importing is an explicit act, and silently preferring the
+  // desktop sign-in would make the import invisible.
+  const pool = new WorkBuddyAccountPool({
+    path: workbuddyPoolPath(variant.id === CN_VARIANT.id ? '.workbuddy-pool.json' : '.workbuddy-ai-pool.json'),
+    hashOf: seed => createHash('sha256').update(seed).digest('hex'),
+  })
+  const store = new WorkBuddyPoolCredentialResolver({
+    pool,
+    fallback: single,
     refresh: credential => client.refreshToken(credential),
   })
   const fallback = fallbackFor(variant)

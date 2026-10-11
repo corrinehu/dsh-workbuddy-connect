@@ -34,6 +34,8 @@ The same UI works unchanged inside the DSH 0.1.5 settings cards:
 
 - **Enterprise credit**: on the CN product, enterprise accounts (non-empty `enterpriseId`) read their cycle quota from the enterprise billing endpoint, and the card shows an "enterprise quota" row with the cycle reset time.
 
+- **Account pool (bulk import · rotation · daily check-in)**: besides the desktop app's own sign-in, you can import a batch of accounts, let the plugin rotate between them when one runs out of credit or its session dies, and claim the daily grant for all of them with one command. An empty pool behaves **exactly** as before this feature existed (the desktop sign-in only); importing is an explicit act. See the "Account pool" section below.
+
 - **Rate**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown. The rate is display-only and never affects requests.
 
 - **Promo badges**: promo badges (`限时免费`, `夜间折扣`) ride the model name itself (e.g. `Hy4 preview · x0.00 · 限时免费`), visible wherever you pick a model; the status card also collects currently-discounted models. Per the WorkBuddy service data, synced each time DSH starts. The international version's promotions come from the service's `modelPromotions` (which carry an effective window). Once a promotion lapses its badge is withdrawn; because the service writes the discounted value into the model's own rate field, the original price cannot be reconstructed, so that model then reports "price unavailable — refresh to update" rather than repeating the discounted rate or claiming the model is free.
@@ -185,6 +187,52 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 ```
 
 `logout` removes only that version's plugin-owned credential copy. It leaves the desktop app's own sign-in alone and does not promise the model group will disappear (the app's credential file still supplies one).
+
+## Account pool
+
+Beyond the desktop app's own sign-in, you can import a batch of accounts into an **account pool**, let the plugin rotate between them, and claim the daily credit grant for all of them at once.
+
+**An empty pool changes nothing**: every credential read still goes through the original single-account path (desktop sign-in, then the plugin-owned copy), with byte-identical error messages and diagnostics. Importing is an explicit act, and the pool takes precedence only once it holds an account.
+
+```sh
+# Bulk import: a file, several files, or a directory
+dsh plugin --profile web exec dsh-workbuddy-connect import ~/accounts
+dsh plugin --profile web exec dsh-workbuddy-connect import a.json b.jsonl
+
+# List the pool (never prints a token)
+dsh plugin --profile web exec dsh-workbuddy-connect accounts
+
+# Claim the daily grant for every account (--credits also reads each balance)
+dsh plugin --profile web exec dsh-workbuddy-connect checkin --credits
+
+# Manage
+dsh plugin --profile web exec dsh-workbuddy-connect use <key>        # make it the active account
+dsh plugin --profile web exec dsh-workbuddy-connect disable <key>    # exclude from rotation (kept)
+dsh plugin --profile web exec dsh-workbuddy-connect enable <key>
+dsh plugin --profile web exec dsh-workbuddy-connect remove <key>     # delete it
+dsh plugin --profile web exec dsh-workbuddy-connect clear            # empty the pool
+```
+
+Add `--provider workbuddy-ai` for the international version; each variant keeps its **own** pool file (the two endpoints do not share accounts).
+
+**Accepted import formats**: a desktop auth document, a `workbuddy2api` gateway `auths/*.json`, an array of accounts, a uid-keyed map, or JSON Lines (`#` starts a comment). Both the seconds and milliseconds spellings of `expiresAt` are understood.
+
+```json
+{
+  "auth": { "accessToken": "…", "refreshToken": "…", "expiresAt": 1893456000, "domain": "workbuddy.ai" },
+  "account": { "uid": "…", "enterpriseId": "…", "nickname": "…" }
+}
+```
+
+**Three behavioural guarantees**:
+
+- **Import refreshes, it does not overwrite.** Re-importing the same file is idempotent; if the imported file is *older* than what the pool holds (judged by the access token's expiry), **both halves of the stored pair are kept** — taking only one half is worse, because a refresh token that has since rotated is dead and adopting it would break an account the plugin had already renewed. `disable` is never cleared by a re-import.
+- **Only a dead session rotates.** An account is excluded and the pool moves on only when the upstream explicitly reports the session as dead (e.g. `12153`). Transport failures and 5xx **never** rotate — otherwise one network hiccup would empty the pool. Exhausted credit does not rotate either: credit comes back with the cycle.
+- **Check-in is idempotent-aware.** "Already claimed today" / "not applicable" (business codes `10001`/`14001` or the matching text) count as success, not failure — otherwise a healthy pool looks broken every day after the first run. A transport-level error is never read as "already claimed", which would record a request that never arrived as a claimed grant.
+
+`checkin` exit codes: `0` all succeeded · `1` some failed · `2` at least one session is dead (that account needs a human to sign in again). Suitable for a scheduled task as-is.
+
+The pool file lives in `$DSH_HOME` (`.workbuddy-pool.json` for CN, `.workbuddy-ai-pool.json` for international) with mode `0o600`. Every CLI output — including `--json` — carries uid, nickname, and expiry only, **never a token**.
 
 ## Known limitations
 

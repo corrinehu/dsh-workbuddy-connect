@@ -42,6 +42,8 @@
 
 - **企业账号积分**：国内版企业账号（`enterpriseId` 非空）走企业专用计费接口读取周期额度，卡片显示「企业额度」与周期重置时间。
 
+- **账号池（批量导入 · 自动轮换 · 每日签到）**：除桌面 App 的登录账号外，可以额外导入一批账号，插件在额度耗尽或会话失效时自动换号，并可一条命令为全部账号领取每日积分。池子为空时行为与本功能加入前**完全一致**（仍只用桌面 App 的登录态），导入是显式动作。详见下方「账号池」一节。
+
 - **费率比例**：模型选择列表里每个模型名后直接显示积分倍率（如 `GLM-5.2 · x0.79`、`Hy3 · x0.00`），`/model` 弹窗与输入框的模型下拉都能看到。倍率只是显示，不影响实际请求。
 
 
@@ -188,6 +190,52 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 ```
 
 `logout` 只删除该版插件自留的凭据副本，不动桌面 App 自己的登录，也不承诺一定让模型分组消失（App 的凭据文件仍在时依然生效）。
+
+## 账号池
+
+除了桌面 App 的登录账号，还可以导入一批账号组成**账号池**，让插件在多个账号间自动轮换，并批量领取每日积分。
+
+**池子为空时行为不变**：每次取凭据都仍走原来的单账号路径（桌面 App 登录态 → 插件自留副本），错误信息与诊断输出逐字相同。导入账号是显式动作，导入后池子才优先生效。
+
+```sh
+# 批量导入：文件、多个文件、目录都行
+dsh plugin --profile web exec dsh-workbuddy-connect import ~/accounts
+dsh plugin --profile web exec dsh-workbuddy-connect import a.json b.jsonl
+
+# 查看池子（不打印任何令牌）
+dsh plugin --profile web exec dsh-workbuddy-connect accounts
+
+# 批量签到（--credits 顺带查余额）
+dsh plugin --profile web exec dsh-workbuddy-connect checkin --credits
+
+# 管理
+dsh plugin --profile web exec dsh-workbuddy-connect use <key>        # 设为当前活跃
+dsh plugin --profile web exec dsh-workbuddy-connect disable <key>    # 临时排除（账号保留）
+dsh plugin --profile web exec dsh-workbuddy-connect enable <key>
+dsh plugin --profile web exec dsh-workbuddy-connect remove <key>     # 彻底删除
+dsh plugin --profile web exec dsh-workbuddy-connect clear            # 清空，回落到桌面登录态
+```
+
+国际版加 `--provider workbuddy-ai`，池文件与国内版**各自独立**（两个端点的账号不通用）。
+
+**支持的导入格式**：一份文件可以是桌面 App 的 auth 文档、`workbuddy2api` 网关的 `auths/*.json`、账号数组、以 uid 为键的映射，或 JSON Lines（`#` 开头为注释）。`expiresAt` 秒与毫秒两种写法都认。
+
+```json
+{
+  "auth": { "accessToken": "…", "refreshToken": "…", "expiresAt": 1893456000, "domain": "workbuddy.ai" },
+  "account": { "uid": "…", "enterpriseId": "…", "nickname": "…" }
+}
+```
+
+**三条行为约定**：
+
+- **导入是「刷新」不是「覆盖」**：重复导入同一份文件是幂等的；若导入的文件比池中已存凭据更旧（按 access token 过期时间判断），则**整个凭据对都保留池中版本**——只留一半更糟，refresh token 一旦轮换过，旧的已经失效，采用它会把一个本来健康的账号弄坏。`disable` 状态也不会被重新导入重置。
+- **只有会话失效才换号**：上游明确回报会话已死（如 `12153`）才把该账号排除并换下一个；传输失败、5xx **不换号**，否则一次网络抖动就会把池子清空。额度用尽同样不换号——额度会随周期恢复。
+- **签到幂等**：上游回报「今天已签到」「功能未适用」等（业务码 `10001`/`14001` 或对应文案）记为成功而非失败，否则一个健康池子每天第一次之后看起来全是失败。传输层错误永远不会被当作「已签到」——那会把「根本没连上」记成「今天已领」。
+
+`checkin` 的退出码：`0` 全部成功 · `1` 有失败 · `2` 有账号会话失效（需人工重新登录该账号）。可直接挂到定时任务。
+
+池文件位于 `$DSH_HOME`（国内版 `.workbuddy-pool.json`、国际版 `.workbuddy-ai-pool.json`），权限 `0o600`；所有 CLI 输出（含 `--json`）都只含 uid / 昵称 / 过期时间，**不含任何令牌**。
 
 ## 已知限制
 

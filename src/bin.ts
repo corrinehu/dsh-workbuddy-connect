@@ -11,6 +11,7 @@ import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath 
 import { atRestKeyProviderFor } from './desktop-credential-protection.ts'
 import { CN_VARIANT, variantFor, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 import { resolveAppVersion } from './app-version.ts'
+import { POOL_ACTIONS, runPoolCommand } from './pool-cli.ts'
 
 type Action = 'doctor' | 'logout' | 'status'
 
@@ -26,15 +27,29 @@ function safeMessage(error: unknown): string {
 
 function printHelp(): void {
   process.stdout.write([
-    'Usage: dsh-workbuddy-connect <doctor|status|logout> [--provider <id>] [--json]',
+    'Usage: dsh-workbuddy-connect <command> [options]',
     '',
     '  doctor   secret-free sign-in and environment diagnostics',
     '  status   sign-in state, remaining WorkBuddy credit, and host-bundle health',
     '  logout   remove the plugin-owned credential copy (the desktop app keeps its sign-in)',
     '',
+    'Account pool (bulk import, rotation, daily check-in):',
+    '  import <path...>   merge accounts from files or directories into the pool',
+    '                     accepts the desktop auth document, the flat gateway auth,',
+    '                     an array, a uid-keyed map, or JSON Lines',
+    '  accounts           list the pool (never prints a token)',
+    '  checkin            claim the daily credit grant for every usable account',
+    '  use <key>          make one account the active one',
+    '  enable|disable <key>   include or exclude one account from rotation',
+    '  remove <key>       delete one account from the pool',
+    '  clear              empty the pool (falls back to the desktop sign-in)',
+    '',
     '  --provider  which product to inspect; defaults to workbuddy',
     `              one of: ${WORKBUDDY_VARIANTS.map(variant => variant.id).join(', ')}`,
-    '  --json      emit one secret-free JSON document (doctor/status only)',
+    '  --json      emit one secret-free JSON document (all commands)',
+    '  --pool      pool file path (defaults to the plugin-owned file under $DSH_HOME)',
+    '  --replace   import: replace the pool instead of merging into it',
+    '  --credits   checkin: also read each account\'s remaining credit',
     '',
   ].join('\n'))
 }
@@ -217,9 +232,12 @@ export async function run(argv: readonly string[]): Promise<number> {
     return 0
   }
   const [rawAction, ...flags] = argv
+  // The pool subcommands are routed before the single-account actions so their
+  // argument grammar stays self-contained (see `pool-cli.ts`).
+  if (POOL_ACTIONS.has(rawAction!)) return await runPoolCommand(argv)
   const actions: readonly Action[] = ['doctor', 'logout', 'status']
   if (!actions.includes(rawAction as Action)) {
-    process.stderr.write(`dsh-workbuddy-connect: expected doctor, logout, or status; got ${JSON.stringify(rawAction)}\n`)
+    process.stderr.write(`dsh-workbuddy-connect: expected doctor, logout, status, or one of ${[...POOL_ACTIONS].sort().join(', ')}; got ${JSON.stringify(rawAction)}\n`)
     return 1
   }
   const action = rawAction as Action

@@ -9,6 +9,7 @@
 
 import { appUserAgent, resolveAppVersion, type AppVersionInfo } from './app-version.ts'
 import { chatUserAgent, fallbackChatIdentity, resolveChatIdentity, type ChatIdentity } from './client-identity.ts'
+import { classifyCheckinOutcome } from './account-pool.ts'
 import type { WorkBuddyCredential } from './auth.ts'
 import type { ProbeAttempt } from './probe.ts'
 import { PROBE_MAX_TOKENS, PROBE_PROMPT } from './probe.ts'
@@ -610,6 +611,31 @@ function envelopeError(status: number, envelope: Envelope): Error {
   return new Error(`workbuddy upstream ${kind} (http ${status}): ${envelope.msg.slice(0, 160)}`)
 }
 
+/** What one account's daily check-in attempt concluded. */
+export interface WorkBuddyCheckinOutcome {
+  /**
+   * `ok` claimed now · `already` claimed today or not applicable (idempotent)
+   * · `auth` the session is dead and needs a human · `failed` anything else.
+   */
+  status: 'ok' | 'already' | 'auth' | 'failed'
+  /** The upstream's own words, or the transport error; never a token. */
+  detail: string
+}
+
+/**
+ * Daily check-in path candidates, in probe order, per realm.
+ *
+ * The international endpoint serves the billing family without the `/v2`
+ * prefix and 404s on the CN spelling, so global tries the bare path first and
+ * falls back; CN keeps its long-standing spelling verbatim (zero regression).
+ * Only `404` advances to the next candidate.
+ */
+function dailyCheckinPaths(credential: WorkBuddyCredential): readonly string[] {
+  return regionOf(credential.domain) === 'global'
+    ? ['/billing/meter/daily-checkin', '/v2/billing/meter/daily-checkin']
+    : ['/v2/billing/meter/daily-checkin']
+}
+
 /** Provenance of one successful catalog fetch, surfaced by the status card. */
 export interface WorkBuddyCatalogFetch {
   fetchedAtMs: number
@@ -1113,6 +1139,80 @@ export class WorkBuddyUpstreamClient {
     }
   }
 
+  /**
+   * Claim one account's daily credit grant.
+   *
+   * Returns a classified outcome rather than throwing, because the caller is a
+   * batch loop: one account's dead session must not stop the other forty from
+   * checking in, and the batch report needs a per-account verdict anyway.
+   *
+   * The three-way split of a failure is the whole point:
+   *
+   * - `auth` — the session is dead. Only a human can fix it, so the account is
+   *   reported distinctly instead of being retried forever.
+   * - `already` — idempotent. Counting this as a failure would make a healthy
+   *   pool look broken every day after the first run.
+   * - `failed` — everything else, including transport errors, which are never
+   *   allowed to masquerade as `already` (see `classifyCheckinOutcome`).
+   *
+   * The path differs by realm and that difference is load-bearing: the
+   * international endpoint serves the billing family without the `/v2` prefix
+   * and 404s on the CN spelling, so the global probe tries the bare path first
+   * and falls back — the order the Go gateway (`workbuddy2api`, `cmd/signin`)
+   * established against the live upstream.
+   */
+  async dailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinOutcome> {
+    let lastError: unknown
+    for (const [index, path] of dailyCheckinPaths(credential).entries()) {
+      let response: Response
+      try {
+        response = await fetch(`${billingBase(credential)}${path}`, {
+          method: 'POST',
+          headers: billingHeaders(credential),
+          body: JSON.stringify({}),
+          signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+        })
+      } catch (error: unknown) {
+        return { status: 'failed', detail: error instanceof Error ? error.message : String(error) }
+      }
+      // `404` is the only status that advances to the next candidate: it is the
+      // documented difference between the two spellings. Any other failure is
+      // the answer — retrying a 401 or a 500 against a second path would just
+      // double the load on an endpoint that already said no.
+      if (response.status === 404 && index < dailyCheckinPaths(credential).length - 1) {
+        lastError = new Error(`workbuddy upstream 404 on ${path}`)
+        continue
+      }
+      let envelope: Envelope
+      try {
+        envelope = await readEnvelope(response)
+      } catch (error: unknown) {
+        return { status: 'failed', detail: error instanceof Error ? error.message : String(error) }
+      }
+      if (response.status >= 400) {
+        const detail = `http ${response.status}: ${envelope.msg.slice(0, 160)}`
+        // Reuse the plugin's single session-death classifier rather than keeping
+        // a second marker list in sync: `classifyUpstreamError` already owns the
+        // 401 rule and the `12153` / "Offline user session not found" markers.
+        if (classifyUpstreamError(response.status, envelope.msg) === 'session_dead') {
+          return { status: 'auth', detail }
+        }
+        return { status: 'failed', detail }
+      }
+      if (envelope.code !== 0) {
+        const detail = `code=${envelope.code} msg=${envelope.msg.slice(0, 160)}`
+        if (classifyUpstreamError(response.status, envelope.msg) === 'session_dead') {
+          return { status: 'auth', detail }
+        }
+        // A business failure carries the upstream's own text, so the full
+        // idempotent vocabulary (including the English words) applies here —
+        // unlike a transport error, whose text is ours, not the upstream's.
+        return { status: classifyCheckinOutcome(envelope.msg, undefined) === 'already' ? 'already' : 'failed', detail }
+      }
+      return { status: 'ok', detail: envelope.msg === '' ? '' : envelope.msg.slice(0, 160) }
+    }
+    return { status: 'failed', detail: lastError instanceof Error ? lastError.message : 'workbuddy upstream: no usable check-in path' }
+  }
 
   /**
    * One probe request: a real streaming chat call carrying the effort under

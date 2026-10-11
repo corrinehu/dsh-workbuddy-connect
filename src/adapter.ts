@@ -14,7 +14,7 @@ import type { LlmModelInfo, LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { PiAiAdapterOptions, ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyCredentialSource } from './pool-store.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyProbeRecord } from './probe-store.ts'
 import type { WorkBuddyShim } from './shim.ts'
@@ -167,7 +167,7 @@ export interface WorkBuddyAdapterOptions {
    */
   region?: WorkBuddyRegion
   shim: WorkBuddyShim
-  store: WorkBuddyCredentialStore
+  store: WorkBuddyCredentialSource
   catalog: WorkBuddyCatalog
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined
