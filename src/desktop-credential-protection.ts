@@ -419,10 +419,26 @@ const WINDOWS_REPLACEMENT_CHARACTER = '\uFFFD'
  *   spaces, commas, or quotes no longer depend on column positions, and only
  *   the two values this plugin reads are collected.
  *
- * The root is passed as a `-Root` argument, never interpolated into the
- * command text.
+ * The root still never appears in the command text, but it cannot travel in
+ * argv either: a `-Command` value is the *whole* command, so PowerShell appends
+ * any further argv entry to it as one more statement instead of binding it to
+ * `param($Root)`. `-Command <script> -Root <value>` therefore left `$Root`
+ * empty, the block then failed its `Get-Item` probe on `Registry::`, and every
+ * root came back "unreadable" — which the discovery flow reports as an
+ * unfinished search, so the app was never found and the encrypted sign-in was
+ * never readable (the plugin then shows no model group at all). The block is
+ * invoked explicitly and takes its argument from
+ * {@link WINDOWS_REGISTRY_QUERY_ROOT_ENV} instead.
  */
 const WINDOWS_REGISTRY_RELATIVE_POWERSHELL = 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+/**
+ * Environment variable that carries the root into the fallback script.
+ *
+ * The child's environment is built per spawn, so this never touches the host's
+ * own environment, and a value that is never interpolated cannot break out of
+ * the command text.
+ */
+export const WINDOWS_REGISTRY_QUERY_ROOT_ENV = 'DSH_WORKBUDDY_REGISTRY_QUERY_ROOT'
 /** Exit code meaning the root key does not exist (a normal, expected outcome). */
 const WINDOWS_POWERSHELL_ROOT_ABSENT = 2
 /** Exit code meaning the root exists but a part of it could not be read. */
@@ -442,6 +458,19 @@ const WINDOWS_POWERSHELL_QUERY_SCRIPT = [
   '};',
   'ConvertTo-Json -InputObject @($out) -Compress -Depth 3',
 ].join(' ')
+
+/**
+ * The complete text handed to `-Command`.
+ *
+ * The script block is called explicitly so that PowerShell itself binds its
+ * `-Root` argument, which a trailing argv entry cannot do — see the note on
+ * {@link WINDOWS_REGISTRY_RELATIVE_POWERSHELL}. Reading the value from the
+ * environment keeps a registry path out of the command text while giving the
+ * block its argument. Exported so a live test can drive this exact artifact
+ * through a real interpreter: the mocked specs assert the argv shape, which is
+ * what encoded the wrong assumption in the first place.
+ */
+export const WINDOWS_POWERSHELL_QUERY_COMMAND = `& { ${WINDOWS_POWERSHELL_QUERY_SCRIPT} } -Root $env:${WINDOWS_REGISTRY_QUERY_ROOT_ENV}`
 
 /** One discovery subprocess's own limits; see {@link WorkBuddyAtRestKeyProviderOptions}. */
 export const WORKBUDDY_DISCOVERY_STEP_TIMEOUT_MS = 3_000
@@ -714,14 +743,17 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      WINDOWS_POWERSHELL_QUERY_SCRIPT,
-      '-Root',
-      root,
+      WINDOWS_POWERSHELL_QUERY_COMMAND,
     ], {
       maxBuffer: WINDOWS_REGISTRY_OUTPUT_MAX_BYTES,
       timeout: WORKBUDDY_DISCOVERY_STEP_TIMEOUT_MS,
       windowsHide: true,
       encoding: 'utf8',
+      // Delivered through the child's environment rather than argv, because a
+      // `-Command` argv entry is appended to the command text instead of being
+      // bound; see {@link WINDOWS_POWERSHELL_QUERY_COMMAND}. Spreading keeps
+      // every inherited variable the interpreter expects to find.
+      env: { ...process.env, [WINDOWS_REGISTRY_QUERY_ROOT_ENV]: root },
     }, (error, stdout) => {
       if (settled) return
       settled = true

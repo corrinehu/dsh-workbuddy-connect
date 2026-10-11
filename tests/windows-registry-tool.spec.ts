@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const execFileMock = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ execFile: execFileMock }))
 
-import { workBuddyWindowsDiscoveryTools } from '../src/desktop-credential-protection.ts'
+import {
+  WINDOWS_REGISTRY_QUERY_ROOT_ENV,
+  workBuddyWindowsDiscoveryTools,
+} from '../src/desktop-credential-protection.ts'
 
 type RegistryFailure = Error & { code: number, killed?: boolean }
 
@@ -163,18 +166,28 @@ describe('issue #88: fallback triggers on ambiguous bytes only', () => {
     expect(execFileMock).toHaveBeenCalledTimes(1)
   })
 
-  it('routes the root as an argument, never into the command text', async () => {
+  it('keeps the root out of the command text and delivers it in the child environment', async () => {
     vi.stubEnv('SystemRoot', 'C:\\Windows')
-    const calls: { binary: string, args: string[] }[] = []
+    const calls: { binary: string, args: string[], execOptions: object }[] = []
     registryStdout(Buffer.concat([GBK_CJK]), {
       fallback: { stdout: '[]' },
-      onSpawn: (binary, args) => { calls.push({ binary, args }) },
+      onSpawn: (binary, args, execOptions) => { calls.push({ binary, args, execOptions }) },
     })
-    await workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Software\\Uninstall', new AbortController().signal)
+    const root = 'HKCU\\Software\\Uninstall'
+    await workBuddyWindowsDiscoveryTools().queryUninstallRoot(root, new AbortController().signal)
     const fallbackCall = calls.find(call => /powershell/iu.test(call.binary))!
-    const commandIndex = fallbackCall.args.indexOf('-Command')
-    expect(fallbackCall.args[commandIndex + 1]).not.toContain('HKCU')
-    expect(fallbackCall.args[fallbackCall.args.indexOf('-Root') + 1]).toBe('HKCU\\Software\\Uninstall')
+    const command = fallbackCall.args[fallbackCall.args.indexOf('-Command') + 1]!
+    // Two separate requirements, and the first one alone is not enough: the
+    // root must stay out of the command text, and it must not be handed over as
+    // a trailing argv pair either. PowerShell appends every argv entry after
+    // `-Command` to the command text as another statement, so `-Root <value>`
+    // never reached `param($Root)` — the block then ran against `Registry::`
+    // itself and reported every root unreadable.
+    expect(command).not.toContain('HKCU')
+    expect(fallbackCall.args).not.toContain('-Root')
+    expect(command).toContain(`$env:${WINDOWS_REGISTRY_QUERY_ROOT_ENV}`)
+    const env = (fallbackCall.execOptions as { env?: Record<string, string | undefined> }).env
+    expect(env?.[WINDOWS_REGISTRY_QUERY_ROOT_ENV]).toBe(root)
   })
 
   it('declares param first and sets the output encoding after it', async () => {
