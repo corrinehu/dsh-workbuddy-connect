@@ -18,7 +18,9 @@
  * `fetch` is stubbed, and only where the check-in path is under test.
  */
 
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -33,6 +35,9 @@ import {
 } from '../src/account-pool.ts'
 import { WorkBuddyPoolCredentialResolver, type WorkBuddyCredentialSource } from '../src/pool-store.ts'
 import { WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import { WorkBuddyCredentialStore } from '../src/auth.ts'
+import { WorkBuddyCatalog } from '../src/catalog.ts'
+import { createWorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyAuthStatus, WorkBuddyCredential } from '../src/auth.ts'
 import type { DesktopAuthFormat } from '../src/desktop-credential-protection.ts'
 
@@ -471,6 +476,114 @@ describe('classifyCheckinOutcome', () => {
     // reached the upstream.
     expect(classifyCheckinOutcome(undefined, 'listen EADDRINUSE: address already in use')).toBe('ok')
     expect(classifyCheckinOutcome(undefined, 'connect ECONNREFUSED')).toBe('ok')
+  })
+})
+
+describe('shim integration: a dead session rotates the pool', () => {
+  /**
+   * The end-to-end property that makes rotation real rather than decorative.
+   *
+   * The resolver can only retire an account it is *told* about, and the only
+   * component that sees the upstream's `session_dead` classification on a real
+   * request is the shim. Without this wiring a pooled install would hand every
+   * subsequent request the same rejected account and look permanently broken,
+   * while `retired` stayed at 0 — a failure mode that is invisible in unit tests
+   * of the resolver alone.
+   */
+  async function withShim<T>(
+    accounts: WorkBuddyPoolCredential[],
+    response: () => { ok: false, status: number, kind: 'session_dead' | 'server', message: string },
+    run: (ctx: { port: number, token: string, store: WorkBuddyPoolCredentialResolver }) => Promise<T>,
+  ): Promise<T> {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-pool-shim-'))
+    try {
+      // A desktop file that is present but irrelevant: the pool takes precedence,
+      // so a rotation must never fall through to it while accounts remain.
+      const desktop = join(dir, 'workbuddy-desktop.info')
+      await writeFile(desktop, JSON.stringify({
+        auth: { accessToken: 'AT-DESKTOP', refreshToken: 'RT', expiresAt: Date.now() + 3_600_000, domain: 'www.codebuddy.cn' },
+        account: { uid: 'desktop' },
+      }))
+      const single = new WorkBuddyCredentialStore({
+        desktopPath: desktop,
+        ownPath: join(dir, 'own.json'),
+        refresh: async () => ({ accessToken: 'unused' }),
+      })
+      const pool = new WorkBuddyAccountPool({ path: join(dir, 'pool.json'), hashOf })
+      pool.merge(accounts)
+      const store = new WorkBuddyPoolCredentialResolver({ pool, fallback: single, refresh: async () => ({ accessToken: 'x' }) })
+      const shim = createWorkBuddyShim({
+        store,
+        catalog: new WorkBuddyCatalog(),
+        client: {
+          chatStream: async () => response(),
+          fetchModels: async () => [],
+        } as never,
+      })
+      await shim.ready
+      try {
+        return await run({ port: Number(new URL(shim.baseUrl()).port), token: shim.token(), store })
+      } finally {
+        await shim.close()
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+
+  /** One chat request through the shim's loopback endpoint. */
+  async function chat(port: number, token: string): Promise<{ status: number, body: string }> {
+    return await new Promise((resolve, reject) => {
+      const req = request({
+        host: '127.0.0.1',
+        port,
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: {
+          'Host': `127.0.0.1:${port}`,
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+      }, res => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+      })
+      req.on('error', reject)
+      req.write(JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hi' }] }))
+      req.end()
+    })
+  }
+
+  it('retires the rejected account so the next request uses a different one', async () => {
+    await withShim(
+      [credential('s-1', 'AT-S1'), credential('s-2', 'AT-S2')],
+      () => ({ ok: false, status: 401, kind: 'session_dead', message: 'Offline user session not found' }),
+      async ({ port, token, store }) => {
+        const first = await chat(port, token)
+        expect(first.status).toBe(401)
+        // The report is what makes the rotation happen.
+        expect(store.retiredKeys().map(entry => entry.key)).toEqual(['s-1:'])
+        // And the pool must now offer the *other* account, not the same one again.
+        expect((await store.current())!.accessToken).toBe('AT-S2')
+      },
+    )
+  })
+
+  it('does not retire an account on a non-session failure', async () => {
+    // A server-side error must not cost a working account: one hiccup would
+    // otherwise walk the pool down to nothing. `server` maps to 502 in the
+    // shim's KIND_STATUS table.
+    await withShim(
+      [credential('s-1', 'AT-S1'), credential('s-2', 'AT-S2')],
+      () => ({ ok: false, status: 500, kind: 'server', message: 'internal error' }),
+      async ({ port, token, store }) => {
+        const response = await chat(port, token)
+        expect(response.status).toBe(502)
+        expect(store.retiredKeys()).toHaveLength(0)
+        expect((await store.current())!.accessToken).toBe('AT-S1')
+      },
+    )
   })
 })
 

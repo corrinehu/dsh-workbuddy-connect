@@ -218,6 +218,15 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const result = await client.chatStream(credential, prepared, controller.signal)
 
     if (!result.ok) {
+      // A dead session is the one failure that will keep failing until a human
+      // signs in again, so the pool is told to stop offering this account.
+      // Reporting it here — rather than leaving the next request to rediscover
+      // the same dead credential — is what makes rotation actually happen;
+      // without it a pooled install would hand every subsequent request the same
+      // rejected account and look permanently broken.
+      if (result.kind === 'session_dead') {
+        store.reportDead?.(credential, `upstream classified the chat request as session_dead (http ${result.status})`)
+      }
       const detail = extractDisplayErrorMessage(result.message) ?? result.message.slice(0, 400)
       // The host adapter classifies any error text containing a bare
       // `401`/`403` word as AUTH, which would mask business errors (safety
