@@ -5,3 +5,8 @@ coverage/
 AGENTS.md
 .mimosa/
 .zcode/
+.idea/
+.vscode/
+
+# npm's lockfile; this project installs with pnpm
+package-lock.json

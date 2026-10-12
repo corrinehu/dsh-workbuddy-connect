@@ -30,6 +30,7 @@ import { newestFirst, WorkBuddyProbeStore, workbuddyProbePath } from './probe-st
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { piAiVersionWarning } from './pi-ai-guard.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
+import { CreditLedger } from './credit-ledger.ts'
 import { registerWorkBuddyUpdateRoute } from './update-route.ts'
 import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
@@ -756,6 +757,39 @@ export function apply(ctx: Context, config: Config): void {
     runtime.invalidate()
   }
 
+  // One ledger for the whole bundle: it keys observations by account, so the CN
+  // and international routes may share it without their balances mixing, and it
+  // keys attributed spend by (session, turn) so each reply keeps its own figure.
+  // It lives as long as this host process — the browser rebuilds its copy of the
+  // document on every read, so a restart replays history without any figures,
+  // which is correct: those credits were already spent and attributing them
+  // again would be a guess.
+  const creditLedger = new CreditLedger()
+  // The ledger needs to know which turn is open in each session, and only the
+  // session event stream says so. `turn/start` and `turn/end` carry the turn
+  // number the transcript footer also keys its node by, so the two halves agree
+  // on what "turn 7" means without either translating anything. Registered here
+  // rather than inside the webServer injection because accounting must not
+  // depend on whether a browser is attached — a headless host still keeps the
+  // ledger current for whenever one connects.
+  //
+  // `session/event` is a core session-layer event, not one this package's typed
+  // event map declares, so the subscription is made through a narrow local
+  // view of the emitter. Only the two fields actually read are named, and the
+  // payload is re-checked at runtime: a malformed event must never reach the
+  // ledger, and a host that renames the event simply stops advancing turns
+  // rather than throwing inside the subscription.
+  const sessionEvents = ctx as unknown as {
+    on: (name: string, listener: (session: { id: string }, event: { type: string; data: unknown }) => void) => unknown
+  }
+  sessionEvents.on('session/event', (session, event) => {
+    if (event.type !== 'turn/start' && event.type !== 'turn/end') return
+    const turn = (event.data as { turn?: unknown } | undefined)?.turn
+    if (typeof turn !== 'number' || !Number.isFinite(turn)) return
+    if (event.type === 'turn/start') creditLedger.turnStarted(session.id, turn)
+    else creditLedger.turnEnded(session.id, turn)
+  })
+
   ctx.inject(['webServer'], webCtx => {
     // One update route for the whole bundle: it answers this npm package's
     // public version metadata only, so it is per-plugin, not per-variant.
@@ -765,6 +799,7 @@ export function apply(ctx: Context, config: Config): void {
         path: runtime.variant.statusPath,
         store: runtime.store,
         client: runtime.client,
+        ledger: creditLedger,
         models: () => runtime.catalog.current(),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),

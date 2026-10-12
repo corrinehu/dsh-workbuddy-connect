@@ -27,6 +27,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { WorkBuddyProbeControl } from './WorkBuddyProbeControl.tsx'
+import { TurnSpendTail } from './TurnSpendTail.tsx'
+import { createTurnSpendHook } from './turn-spend-hook.ts'
+import { TurnSpendStore } from './turn-spend-store.ts'
 import { WorkBuddyUpdateOverlay } from './WorkBuddyUpdateNotice.tsx'
 import { WorkBuddyUpdateStore } from './update-store.ts'
 import { WORKBUDDY_CONNECT_VERSION } from '../version.ts'
@@ -42,6 +45,24 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     'settings.workbuddy': WorkBuddySettingsKey
   }
   interface SlotMap {
+    /**
+     * The completed-turn footer (#99), declared by ui-chat's turn-tail node
+     * view. This is the seat that renders once per finished turn *inside that
+     * turn's own subtree* and hands over the turn number, which is what makes
+     * a per-turn figure possible at all: the host files spend by turn, so an
+     * entry that knows its turn can look up its own cost, while the composer
+     * badge can only ever show the newest rolling delta.
+     *
+     * Mirrored here rather than imported because this bundle depends on
+     * `dsh-client-ui-conversation` only for types, and the transfer is
+     * compile-time: the runtime declaration belongs to whichever host ships
+     * the chat surface.
+     */
+    'conversation.chat.turnTail': {
+      kind: 'list'
+      scope: 'session'
+      owner: WorkBuddyTurnTailOwnerProps
+    }
     /**
      * Compile-time mirror of the shell's overlay seat (declared at runtime by
      * the ui-layout AppFrame, which this bundle does not depend on): a list
@@ -85,6 +106,23 @@ interface WorkBuddyShellOverlayOwnerProps {
   children?: never
 }
 
+/**
+ * Owner share of the completed-turn footer (#99), as ui-chat dispatches it.
+ *
+ * The owner is `TurnTailNodeView`, which renders one footer per closed turn and
+ * passes the turn, the closing sequence, and a file opener. Only the turn
+ * matters here: it is the same number the host ledger files spend under, so the
+ * footer needs no lookup table and no guess about which reply is newest.
+ */
+interface WorkBuddyTurnTailOwnerProps {
+  /** The completed turn this footer belongs to. */
+  turn: number
+  /** Sequence of the turn's closing node; unused by the spend figure. */
+  seq?: number
+  /** Opens a file in the editor; unused by the spend figure. */
+  openFile?: (path: string) => void
+}
+
 /** Stable browser-plugin name. */
 export const name = 'dsh-workbuddy-connect-client'
 
@@ -122,6 +160,52 @@ const CLIENT_CONTRIBUTION_FAILED = '[dsh-workbuddy-connect] client contribution 
 
 /** Disposer handed back when a deferred registration degraded: nothing to undo. */
 const NOOP_DISPOSER = (): void => {}
+
+/**
+ * Adapt the DSH session controller's running flag into a per-turn callback
+ * (#99), for exactly one session.
+ *
+ * The controller emits `api-session/status` as a HOST-WIDE event carrying
+ * `(sessionId, running)` — it is how DSH's own session list marks a
+ * conversation as having finished something unread. A turn is the falling edge
+ * of that flag: `running` goes true while the agent works and false when the
+ * reply has settled, so only the true→false transition fires the callback.
+ * Firing on the rising edge instead would read the balance before the turn
+ * spent anything and price the previous turn all over again.
+ *
+ * The subscription is per session by construction. This control is mounted once
+ * per conversation, and every mounted control hears the same host-wide event,
+ * so without the id check a turn in one conversation would re-read the balance
+ * shown in every other open conversation — spending a live billing query per
+ * open tab, for a number that did not change.
+ *
+ * A `running` flag that starts true and is never lowered does not fire, and a
+ * first event of `false` on a session that was never seen running does not fire
+ * either: with no observed rise there is no turn to close. That keeps the
+ * connecting snapshot (`running: false` for every idle session) from being read
+ * as a burst of completed turns on mount.
+ *
+ * `$on` may be absent on a host that predates it; the optional call degrades to
+ * the pre-feature behaviour, where the ↻ is the only re-read.
+ */
+function subscribeTurnCompleted(
+  ctx: ClientContext,
+  sessionId: string,
+): (listener: () => void) => () => void {
+  return listener => {
+    const remote = ctx.get('remote') as
+      | { $on?: (event: string, handler: (id: unknown, running: unknown) => void) => () => void }
+      | undefined
+    if (remote?.$on === undefined) return NOOP_DISPOSER
+    let running = false
+    return remote.$on('api-session/status', (id, next) => {
+      if (String(id) !== sessionId || typeof next !== 'boolean') return
+      const was = running
+      running = next
+      if (was && !next) listener()
+    })
+  }
+}
 
 /**
  * Run ONE browser-side contribution, degrading its failure to a `console.error`
@@ -180,6 +264,28 @@ export function apply(ctx: ClientContext): void {
     ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-workbuddy-connect: settings copy')
   })
   const t = ctx.locale.bind(namespace) as WorkBuddyPluginCardInjected['t']
+  /**
+   * The balance document shared by the composer badge and the action row (#99).
+   *
+   * One store for the whole browser half, because the two surfaces have no
+   * React ancestry in common: the action row is rendered by ui-chat, not by
+   * this bundle, so it cannot receive the balance through props. The probe
+   * control writes it (it owns the reads); the action-row entry only reads.
+   */
+  const turnSpend = new TurnSpendStore()
+  /**
+   * The store as a hook, which is what the footer's injected surface carries.
+   *
+   * A factory rather than a hook call: `apply()` runs on the plugin's own
+   * setup path, outside any React render, so calling `useCallback` here would
+   * throw ("Cannot read properties of null (reading 'useCallback')") and take
+   * every contribution down with it. Building the hook lazily means the only
+   * place a hook is called is inside a component's render — where it is legal —
+   * and `useSyncExternalStore` is what makes a footer repaint when a later read
+   * lands. Deferring it also keeps this file free of any React import at
+   * runtime, which the client bundle-purity gate wants.
+   */
+  const useTurnSpend = createTurnSpendHook(turnSpend)
   // The update reminder: one store for the whole bundle (the check compares
   // this npm package's own version, so both provider cards share it). It
   // refreshes once on mount through a 7-day localStorage cache and never
@@ -252,11 +358,31 @@ export function apply(ctx: ClientContext): void {
               directory: scope.modelDirectories.directoryFor(
                 sessionId as Parameters<typeof scope.modelDirectories.directoryFor>[0],
               ).store,
+              turns: subscribeTurnCompleted(ctx, String(sessionId)),
+              turnSpend,
+              sessionId: String(sessionId),
               t,
             }),
           }, WorkBuddyProbeControl)) ?? NOOP_DISPOSER
         ))
       })
     })
+  })
+  // The transcript footer's per-turn figure (#99). This is the only seat that
+  // renders once per completed turn and hands over that turn's own number, so
+  // it is where a reply's cost can sit beside the reply it belongs to instead
+  // of being overwritten by the next turn's read. The component reads the
+  // store the probe control publishes and never fetches, so a long transcript
+  // costs no extra billing traffic however many footers are mounted.
+  guardClientContribution('conversation turn spend', () => {
+    ctx.slots.inject('conversation.chat.turnTail', () => (
+      guardClientContribution('conversation turn spend', () => ctx.slots.register({
+        name: 'conversation.chat.turnTail',
+        id: 'workbuddy-turn-spend',
+        order: 20,
+        locale: namespace,
+        inject: () => ({ useTurnSpend, t }),
+      }, TurnSpendTail)) ?? NOOP_DISPOSER
+    ))
   })
 }

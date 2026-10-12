@@ -1,0 +1,4 @@
+# The clean copy of app.asar. 121 MB of opaque binary that changes wholesale on
+# every DSH upgrade, so tracking it would bloat every clone for no readable
+# history. patch_asar.ps1 recreates it on first use.
+app.asar.orig
