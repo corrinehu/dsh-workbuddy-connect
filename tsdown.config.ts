@@ -19,6 +19,10 @@ const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSI
  */
 const CLIENT_EXTERNALS = [
   'react',
+  // Provided by the host's module registry, so it must not be inlined: a second
+  // copy of react-dom would mean a second reconciler, and a portal rendered by
+  // one is invisible to the other.
+  'react-dom',
   'react/jsx-runtime',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',

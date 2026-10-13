@@ -30,6 +30,7 @@ import { newestFirst, WorkBuddyProbeStore, workbuddyProbePath } from './probe-st
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { piAiVersionWarning } from './pi-ai-guard.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
+import { CreditLedger, workbuddyCreditLedgerPath } from './credit-ledger.ts'
 import { registerWorkBuddyUpdateRoute } from './update-route.ts'
 import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
@@ -530,9 +531,19 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
  *
  * @returns whether the provider registered.
  */
-async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<boolean> {
+async function startVariant(ctx: Context, runtime: VariantRuntime, ledger: CreditLedger): Promise<boolean> {
   const { variant, store, client, catalog, probeService } = runtime
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+  // The ledger is handed to the shim so the credit figures the upstream reports
+  // inside this endpoint's own streams reach it: nothing downstream parses those
+  // streams, so a figure not taken here is a figure lost, and the turn it
+  // belonged to would fall back to the coarser balance reading.
+  const shim = createWorkBuddyShim({
+    store,
+    client,
+    catalog,
+    logger: ctx.logger,
+    onReportedCredit: (sessionId, credit) => { ledger.reported(sessionId, credit) },
+  })
   try {
     await shim.ready
   } catch (error: unknown) {
@@ -756,6 +767,84 @@ export function apply(ctx: Context, config: Config): void {
     runtime.invalidate()
   }
 
+  // One ledger for the whole bundle: it keys observations by account, so the CN
+  // and international routes may share it without their balances mixing, and it
+  // keys attributed spend by (session, turn) so each reply keeps its own figure.
+  // Its figures outlive this process through `workbuddyCreditLedgerPath()`: the
+  // transcript is still on screen after a restart, and the credits behind those
+  // replies were already spent, so a ledger that started empty would silently
+  // blank every figure in the history rather than invent one.
+  const creditLedger = new CreditLedger({ statePath: workbuddyCreditLedgerPath() })
+  // The ledger needs to know which turn is open in each session, and only the
+  // session event stream says so. `turn/start` and `turn/end` carry the turn
+  // number the transcript footer also keys its node by, so the two halves agree
+  // on what "turn 7" means without either translating anything. Registered here
+  // rather than inside the webServer injection because accounting must not
+  // depend on whether a browser is attached — a headless host still keeps the
+  // ledger current for whenever one connects.
+  //
+  // `session/event` is a core session-layer event, not one this package's typed
+  // event map declares, so the subscription is made through a narrow local
+  // view of the emitter. Only the two fields actually read are named, and the
+  // payload is re-checked at runtime: a malformed event must never reach the
+  // ledger, and a host that renames the event simply stops advancing turns
+  // rather than throwing inside the subscription.
+  const sessionEvents = ctx as unknown as {
+    on: (name: string, listener: (session: { id: string }, event: { type: string; data: unknown }) => void) => unknown
+  }
+  // A turn begins with its `turn/start`, but on this host it never ends with a
+  // `turn/end`: a full event trace of a completed two-tool turn contained
+  // `turn/start`, `step/start` x2, `step/end` x2, `assistant/message` x3 and
+  // `tool/call`/`tool/result` — and no `turn/end` at all, so nothing ever told
+  // the ledger to price the turn. The pool therefore kept accumulating and was
+  // dumped onto whichever turn eventually saw a close, which is where totals of
+  // 5.3 and 9.83 came from while ordinary turns fell through to the balance path.
+  //
+  // `step/end` does arrive reliably, and the last step of a turn is the last
+  // `step/end` that turn will emit, so a close is inferred as: a step ended, and
+  // no further step started within a grace period. The delay is the cost of the
+  // inference — a number appears a moment after the reply rather than with it —
+  // and any later `turn/start` about the same turn cancels the pending close so
+  // a turn that resumes is never priced early.
+  const pendingCloses = new Map<string, { turn: number; timer: ReturnType<typeof setTimeout> }>()
+  const closeGraceMs = 1_500
+  const cancelPendingClose = (sessionId: string): void => {
+    const pending = pendingCloses.get(sessionId)
+    if (pending === undefined) return
+    clearTimeout(pending.timer)
+    pendingCloses.delete(sessionId)
+  }
+  const scheduleClose = (sessionId: string, turn: number): void => {
+    cancelPendingClose(sessionId)
+    const timer = setTimeout(() => {
+      const current = pendingCloses.get(sessionId)
+      if (current === undefined || current.turn !== turn) return
+      pendingCloses.delete(sessionId)
+      creditLedger.turnEnded(sessionId, turn)
+    }, closeGraceMs)
+    timer.unref?.()
+    pendingCloses.set(sessionId, { turn, timer })
+  }
+
+  sessionEvents.on('session/event', (session, event) => {
+    const data = event.data as { turn?: unknown; step?: unknown } | undefined
+    const turn = data?.turn
+    if (typeof turn !== 'number' || !Number.isFinite(turn)) return
+    if (event.type === 'turn/start') {
+      cancelPendingClose(session.id)
+      creditLedger.turnStarted(session.id, turn)
+      return
+    }
+    // A genuine `turn/end` is still honoured when a host emits one: it is
+    // authoritative and arrives without waiting for the grace period.
+    if (event.type === 'turn/end') {
+      cancelPendingClose(session.id)
+      creditLedger.turnEnded(session.id, turn)
+      return
+    }
+    if (event.type === 'step/end') scheduleClose(session.id, turn)
+  })
+
   ctx.inject(['webServer'], webCtx => {
     // One update route for the whole bundle: it answers this npm package's
     // public version metadata only, so it is per-plugin, not per-variant.
@@ -765,6 +854,7 @@ export function apply(ctx: Context, config: Config): void {
         path: runtime.variant.statusPath,
         store: runtime.store,
         client: runtime.client,
+        ledger: creditLedger,
         models: () => runtime.catalog.current(),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
@@ -1105,7 +1195,7 @@ export function apply(ctx: Context, config: Config): void {
     for (const runtime of runtimes) await syncVariant(runtime)
   }
 
-  void Promise.all(runtimes.map(async runtime => startVariant(ctx, runtime))).then(() => {
+  void Promise.all(runtimes.map(async runtime => startVariant(ctx, runtime, creditLedger))).then(() => {
     if (stopped) return
     // The host bundle is live: write a heartbeat so the status CLI can report
     // host health without a browser. Cleared on disposal; a stale heartbeat

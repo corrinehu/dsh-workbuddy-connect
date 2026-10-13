@@ -172,6 +172,64 @@ export interface WorkBuddyWebCredits {
   expiry?: WorkBuddyWebCreditExpiry
 }
 
+/**
+ * Credit consumed between the two most recent balance reads (#99).
+ *
+ * WorkBuddy bills a subscription quota with no per-token price, so the drop
+ * between consecutive reads is the only honest figure for "what did that
+ * reply cost". The field is **absent**, never zero, when no comparable pair
+ * exists — a first read, a failed read, an unlimited account, or a change of
+ * account. The badge distinguishes the two cases: absent hides the delta,
+ * `spent: 0` reports a reply that genuinely cost nothing.
+ */
+export interface WorkBuddyWebTurnSpend {
+  /** Credit consumed since the previous read. Never negative. */
+  spent: number
+  /** The balance the drop was measured from. */
+  from: number
+  /** The balance now. */
+  to: number
+  /** Epoch milliseconds of the later read. */
+  at: number
+  /** Which measurement produced `spent`; see {@link WorkBuddyWebTurnSpendEntry.source}. */
+  source: WorkBuddyWebTurnSpendSource
+}
+
+/**
+ * Where a turn's figure came from.
+ *
+ * `reported` is the upstream's own `usage.credit`, summed across every call the
+ * turn made: exact to two decimals, needs no balance read, and immune to
+ * anything else charged to the same account meanwhile.
+ *
+ * `balance` is the drop between two billing reads: a whole-unit approximation
+ * that cannot cover the first turn of a process, and that counts a charge made
+ * anywhere else on the account as if this turn had spent it.
+ *
+ * Carried to the browser rather than kept host-side so the tooltip can name the
+ * source. A figure whose provenance is hidden cannot be told apart from a
+ * precise one, which is how a rough number gets mistaken for an exact one.
+ */
+export type WorkBuddyWebTurnSpendSource = 'reported' | 'balance'
+
+/**
+ * One turn's cost, as the transcript footer reads it (#99).
+ *
+ * A trimmed {@link WorkBuddyWebTurnSpend}: the footer shows a number beside
+ * one reply, so the balances the drop was measured between are not carried
+ * across the wire for every turn in the list.
+ */
+export interface WorkBuddyWebTurnSpendEntry {
+  /** The turn number, matching the transcript's own footer key. */
+  turn: number
+  /** Credit consumed across that turn. Never negative. */
+  spent: number
+  /** Epoch milliseconds of the read that priced it. */
+  at: number
+  /** Which measurement produced `spent`. */
+  source: WorkBuddyWebTurnSpendSource
+}
+
 /** Billing convenience facts for one model, rendered as card badges. */
 export interface WorkBuddyWebModelBadge {
   id: string
@@ -283,6 +341,27 @@ export type WorkBuddyWebStatus =
     expiresAt?: number
     credits?: WorkBuddyWebCredits
     creditsError?: string
+    /**
+     * Credit consumed between the two most recent balance reads (#99).
+     *
+     * Absent when there is no comparable pair; see
+     * {@link WorkBuddyWebTurnSpend}. This is the composer badge's figure and
+     * describes the read pair only — the transcript footer reads
+     * {@link WorkBuddyWebStatus} `turns` instead, which keeps one figure per
+     * turn.
+     */
+    turnSpend?: WorkBuddyWebTurnSpend
+    /**
+     * Per-turn spend for the session this document was requested for (#99).
+     *
+     * Newest last, and only turns the host has a figure for appear. The
+     * transcript footer looks its own turn up here by number; a turn missing
+     * from the list has no honest figure and the footer renders nothing.
+     *
+     * Present only when the request named a session — the composer's badge
+     * asks without one, so this list is absent on its reads.
+     */
+    turns?: readonly WorkBuddyWebTurnSpendEntry[]
     /** Billing convenience facts for the models the plugin serves. */
     models?: readonly WorkBuddyWebModelBadge[]
     /** Where those models came from, and whether the last fetch failed. */

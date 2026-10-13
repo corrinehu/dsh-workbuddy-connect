@@ -38,11 +38,63 @@ import type { CSSProperties } from 'react'
 import type { ModelDirectory } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { CARD_VARIANTS, type WorkBuddyCardVariant, type WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
 import { isWorkBuddyWebStatus } from './status-document.ts'
+import { turnSpendAmount } from './turn-spend.ts'
+import type { TurnSpendStore } from './turn-spend-store.ts'
 import type { WorkBuddyWebProbeModel, WorkBuddyWebStatus } from '../status-paths.ts'
+
+/**
+ * Subscribe to "the session this control belongs to finished a turn" (#99).
+ *
+ * The control does not know how turns are signalled — the DSH session
+ * controller does, and the registration in `client/index.tsx` adapts it. What
+ * the control needs is only the OBSERVATION: a callback to run once per
+ * completed turn, and a disposer for the subscription.
+ *
+ * Returning the disposer (rather than exposing the underlying emitter) is what
+ * lets the effect below keep one subscription tied to this component's
+ * lifetime, so a session switch or an unmount cannot leave a listener behind
+ * that re-reads billing for a conversation nobody is watching.
+ */
+export type SubscribeTurnCompleted = (listener: () => void) => () => void
 
 /** Injected props; `directory` resolves the session's current model selection. */
 export interface WorkBuddyProbeControlProps extends WorkBuddyPluginCardInjected {
   directory: ModelDirectory['store']
+  /**
+   * Per-turn re-read of the balance (#99).
+   *
+   * Absent on hosts that cannot observe turns (an older DSH, or a test that
+   * mounts the control bare). Absent means no automatic re-read: the ↻ is then
+   * the only way to refresh, which is exactly the behaviour before this
+   * feature, so the control degrades to its old self rather than breaking.
+   */
+  turns?: SubscribeTurnCompleted
+  /**
+   * The shared balance document (#99), so the action row can show the same
+   * delta this control computes.
+   *
+   * The control is where the balance lives — it owns the ↻, the mount read,
+   * and the per-turn read — so it is also the one place that can publish a
+   * fresh document. The action-row entry reads this store instead of fetching
+   * the status route again, which would double the billing traffic and race
+   * this control's reads against the host ledger's "previous read".
+   *
+   * Absent when the seat is rendered without the store (tests, or a host that
+   * cannot observe turns), in which case the action row simply shows nothing.
+   */
+  turnSpend?: TurnSpendStore | undefined
+  /**
+   * The conversation this control is mounted in (#99), when the seat names one.
+   *
+   * Passed through to the status read as a `?session=` qualifier, which is how
+   * the host knows to attach that session's per-turn figures to the document
+   * it answers with. Without it the read still works and the rolling delta is
+   * still computed — the host simply has no session to file the figure under,
+   * so the transcript footers stay empty while the composer badge keeps
+   * working. That is the right degradation: an older seat that passes no
+   * session id must not lose the feature it already had.
+   */
+  sessionId?: string | undefined
 }
 
 /**
@@ -54,6 +106,22 @@ export interface WorkBuddyProbeControlProps extends WorkBuddyPluginCardInjected 
  */
 export function cardVariantFor(provider: string): WorkBuddyCardVariant | undefined {
   return CARD_VARIANTS.find(card => card.id === provider)
+}
+
+/**
+ * The status read's URL, naming the conversation when the seat provides one
+ * (#99).
+ *
+ * The session id is a qualifier, never part of the route: the host answers the
+ * same document with or without it, and only adds that session's per-turn
+ * figures when it is present. Encoding it means a session id containing `&` or
+ * `#` cannot truncate the query or smuggle a second parameter — the host parses
+ * the value as an opaque key, so it must arrive exactly as given.
+ */
+export function statusUrl(statusPath: string, sessionId: string | undefined): string {
+  if (sessionId === undefined || sessionId === '') return statusPath
+  const separator = statusPath.includes('?') ? '&' : '?'
+  return `${statusPath}${separator}session=${encodeURIComponent(sessionId)}`
 }
 
 // The host slot's baseline sits a touch high and leaves a full inter-control gap
@@ -106,6 +174,21 @@ const creditStyle: CSSProperties = {
   color: 'var(--dsw-alias-label-tertiary)',
   whiteSpace: 'nowrap',
   padding: '0 4px',
+}
+
+/**
+ * The per-turn delta (#99). Dimmer and tighter than the balance it annotates:
+ * the balance is the fact, this is its footnote. `0 2px` rather than the
+ * balance's `0 4px` keeps the pair reading as one group instead of two
+ * separate readouts.
+ */
+const spendStyle: CSSProperties = {
+  fontSize: 11,
+  lineHeight: '16px',
+  color: 'var(--dsw-alias-label-tertiary)',
+  opacity: 0.75,
+  whiteSpace: 'nowrap',
+  padding: '0 2px',
 }
 
 /**
@@ -305,7 +388,7 @@ function tooltipText(
 }
 
 /** Model-independent shell: resolves the selection, then delegates per model. */
-export function WorkBuddyProbeControl({ directory, t }: WorkBuddyProbeControlProps) {
+export function WorkBuddyProbeControl({ directory, t, turns, turnSpend, sessionId }: WorkBuddyProbeControlProps) {
   const subscribe = useCallback((listener: () => void) => directory.subscribe(listener), [directory])
   const snapshot = useCallback(() => directory.getSnapshot(), [directory])
   const selection = useSyncExternalStore(subscribe, snapshot, snapshot).current
@@ -317,13 +400,39 @@ export function WorkBuddyProbeControl({ directory, t }: WorkBuddyProbeControlPro
   // A new selection gets fresh state; a late response cannot target the new model.
   return card === undefined || selection === undefined || key === undefined
     ? null
-    : <ModelProbe key={key} model={selection.model} card={card} label={useLabel(t)} t={t} />
+    : <ModelProbe key={key} model={selection.model} card={card} label={useLabel(t)} t={t} turns={turns} turnSpend={turnSpend} sessionId={sessionId} />
 }
 
-function ModelProbe({ model, card, label, t }: {
+function ModelProbe({ model, card, label, t, turns, turnSpend, sessionId }: {
   model: string
   card: WorkBuddyCardVariant
   label: string
+  /**
+   * Per-turn re-read of the balance (#99), forwarded from the shell.
+   *
+   * It lives on this component rather than on the shell because the balance
+   * does: `status`, `refresh`, and `creditFailed` are all here, so a turn
+   * callback bound anywhere else would have nothing to refresh. The shell only
+   * resolves which model is selected.
+   *
+   * `| undefined` is explicit because this project compiles with
+   * `exactOptionalPropertyTypes`, under which an optional property does not
+   * accept an explicitly passed `undefined` — and the shell forwards its own
+   * optional `turns` straight through.
+   */
+  turns?: SubscribeTurnCompleted | undefined
+  /**
+   * Forwarded from the shell for the action-row entry (#99); see the shell's
+   * own note. `| undefined` is explicit for the same
+   * `exactOptionalPropertyTypes` reason as `turns`.
+   */
+  turnSpend?: TurnSpendStore | undefined
+  /**
+   * Forwarded from the shell for the status read's `?session=` qualifier
+   * (#99); see the shell's own note. `| undefined` is explicit for the same
+   * `exactOptionalPropertyTypes` reason as `turns`.
+   */
+  sessionId?: string | undefined
 } & WorkBuddyPluginCardInjected) {
   const [status, setStatus] = useState<WorkBuddyWebStatus>()
   const [busy, setBusy] = useState(false)
@@ -349,7 +458,7 @@ function ModelProbe({ model, card, label, t }: {
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const seq = ++readSeq.current
-    const response = await fetch(card.statusPath, {
+    const response = await fetch(statusUrl(card.statusPath, sessionId), {
       credentials: 'same-origin',
       // The balance must not come from any intermediate cache: a manual ↻ is
       // asking for exactly one fresh billing read.
@@ -370,8 +479,12 @@ function ModelProbe({ model, card, label, t }: {
     if (mounted.current && !signal?.aborted && seq === readSeq.current) {
       setStatus(value)
       setCreditFailed(false)
+      // Hand the fresh document to the action row (#99). Published only on a
+      // read that both landed and is still the newest, so a stale response can
+      // never repaint the delta beside another turn's message.
+      turnSpend?.publish(card.statusPath, value)
     }
-  }, [card.statusPath, t])
+  }, [card.statusPath, t, turnSpend, sessionId])
 
   useEffect(() => {
     mounted.current = true
@@ -384,8 +497,44 @@ function ModelProbe({ model, card, label, t }: {
     return () => {
       mounted.current = false
       controller.abort()
+      // The control was the only writer for this route (#99); once it is gone
+      // no further read will correct the document, so the action row must stop
+      // showing it rather than freeze the last number on screen forever.
+      turnSpend?.clear(card.statusPath)
     }
-  }, [refresh])
+  }, [refresh, card.statusPath, turnSpend])
+
+  /**
+   * One re-read per completed turn (#99).
+   *
+   * This is the automatic read the mount effect's comment says does not exist —
+   * and it is worth being explicit about why the objection there does not apply.
+   * That comment rules out *timed* refreshing (an interval, a focus poll),
+   * because a balance that re-reads on its own schedule answers a question
+   * nobody asked and spends a live billing query to do it. A turn boundary is
+   * not a schedule: it is the one moment when the number under the badge has
+   * definitely changed, and it is the moment whose cost the badge is reporting.
+   *
+   * It is also what makes `turnSpend` mean anything. The host derives the delta
+   * from two consecutive balance reads, so whichever reads bracket a turn are
+   * the ones that price it. Without a read here, the bracket spans however many
+   * turns happened to fall between two mount fetches, and the badge would
+   * attribute all of them to the last one. Reading here closes the bracket on
+   * the turn that just ended — which is the whole point of the feature.
+   *
+   * The callback is not `checkNow`: that path owns the ↻ button's busy state
+   * and its failure flag, and a background read must not put the button into a
+   * spinner the user did not ask for, nor hide the balance behind a failure
+   * they did not cause. A failed automatic read is silently absorbed — the
+   * previous turn's number stays up and keeps its meaning, because it really
+   * did describe the turn before this one.
+   */
+  useEffect(() => {
+    if (turns === undefined) return
+    return turns(() => {
+      void refresh().catch(() => { /* A background re-read never surfaces an error. */ })
+    })
+  }, [turns, refresh])
 
   /**
    * The ↻'s action (#99): one manual re-read through the same status route.
@@ -412,7 +561,13 @@ function ModelProbe({ model, card, label, t }: {
       await refresh()
     } catch {
       // Only hide the balance when this failure is still about the newest read.
-      if (mounted.current && readSeq.current === seqAtStart) setCreditFailed(true)
+      if (mounted.current && readSeq.current === seqAtStart) {
+        setCreditFailed(true)
+        // The action row must hide in the same breath (#99): the host answers
+        // the same stale `turnSpend` after a failed read, so a kept document
+        // would keep presenting last turn's cost as this one's.
+        turnSpend?.clear(card.statusPath)
+      }
     } finally {
       refreshingRef.current = false
       if (mounted.current) setRefreshing(false)
@@ -484,6 +639,11 @@ function ModelProbe({ model, card, label, t }: {
   // affordance whatever the document says, which is also how the control
   // recovers from an unreadable first read.
   const credit = creditFailed ? undefined : creditBadge(status, card, t)
+  // The delta goes stale the moment the balance does: a failed manual read
+  // hides the pair together (the host would answer the same stale `turnSpend`,
+  // since it only advances when a read succeeds). Showing a fresh-looking cost
+  // beside a hidden balance would be the worse half-truth.
+  const spend = creditFailed ? undefined : turnSpendAmount(status, t)
 
   const text = tooltipText(t, model, { busy, result, failed })
   const disabled = busy || probe?.running === true || key === undefined
@@ -500,6 +660,14 @@ function ModelProbe({ model, card, label, t }: {
       onMouseLeave={() => { setTooltipVisible(false) }}
     >
       {credit === undefined ? null : <span style={creditStyle}>{credit}</span>}
+
+      {/*
+        The delta rides the balance's own annotation register but dimmer still:
+        it is a footnote on the number beside it, not a second reading. It sits
+        between the balance and the ↻ so the pair reads as one group, and it
+        vanishes with the balance rather than outliving it.
+      */}
+      {spend === undefined ? null : <span style={spendStyle}>{spend}</span>}
 
       <button
         type="button"

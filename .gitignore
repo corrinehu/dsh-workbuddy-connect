@@ -5,3 +5,29 @@ coverage/
 AGENTS.md
 .mimosa/
 .zcode/
+.idea/
+.vscode/
+
+# 121MB clean copy of DSH's app.asar, kept beside the patch script as the
+# patching base and restore source. Deliberately NOT tracked: it is a large
+# opaque binary that changes wholesale on every DSH upgrade, so committing it
+# would bloat every clone for no readable history. Recreate it with
+# `tools/patch_asar.ps1 -Refresh` (after a DSH upgrade) or by uninstalling and
+# reinstalling DSH.
+tools/app.asar.orig
+
+# Working copies kept while reconstructing a clean base. `_npml_ui_chat` holds an
+# unpacked release of the DSH chat bundle fetched with `npm pack`, and
+# `_app.asar.live-bak` a snapshot of a patched live asar. Both are scratch: they
+# are re-creatable from the published package and the installed app, and
+# committing them would put another copy of a 565KB bundle plus a 121MB binary
+# into history for no readable gain.
+tools/_npm_ui_chat/
+tools/_app.asar.live-bak
+
+# npm's lockfile. This fork publishes with pnpm (pnpm-lock.yaml is the tracked
+# one), so an npm lockfile must not ride along: two lockfiles disagree about
+# how to resolve the same tree, and a dependency added here would be invisible
+# to `pnpm install --frozen-lockfile`. Kept on disk because this machine has no
+# pnpm, so npm is what actually builds here.
+package-lock.json

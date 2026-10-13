@@ -52,14 +52,116 @@ export interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
+  /**
+   * Sink for the per-call credit figures the upstream reports.
+   *
+   * The shim is the only place that sees them: they arrive inside the SSE
+   * stream this module forwards, and nothing downstream parses that stream. The
+   * shim also sees the `x-session-id` header the host puts on each call, which
+   * is what lets a figure be attributed to a session at all — the plugin's own
+   * accounting never learns which call belonged to whom otherwise.
+   *
+   * Optional so the shim stays constructible without a ledger, and so a caller
+   * that has none (the tests) is not forced to fabricate one.
+   */
+  onReportedCredit?: (sessionId: string, credit: number) => void
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
+
+/**
+ * Pull `usage.credit` out of one SSE `data:` payload.
+ *
+ * The upstream's final frame carries a `usage` object with a `credit` member
+ * holding that call's cost — measured values 0.11, 0.16, 0.13 — and it is the
+ * only exact per-turn figure the wire offers. Everything else in the frame is
+ * ignored, and anything unparseable returns `undefined` rather than throwing:
+ * a malformed frame must not break a reply in flight, and the balance path
+ * still covers a turn whose stream reported nothing.
+ *
+ * Reading only this one member is what keeps the parse cheap enough to run on
+ * every frame of every reply.
+ */
+function readReportedCredit(payload: string): number | undefined {
+  // Cheap rejection first: most frames are content deltas with no usage at all.
+  if (!payload.includes('"credit"')) return undefined
+  try {
+    const frame = JSON.parse(payload) as { usage?: unknown }
+    const usage = frame.usage
+    if (usage === null || typeof usage !== 'object') return undefined
+    const credit = (usage as { credit?: unknown }).credit
+    if (typeof credit !== 'number' || !Number.isFinite(credit) || credit < 0) return undefined
+    return credit
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Accumulate the credit figures a stream reports, one per upstream call.
+ *
+ * Frames arrive split across chunks at arbitrary byte boundaries, so the buffer
+ * is cut on its last newline and the remainder carried: feeding partial JSON to
+ * `JSON.parse` would drop the very frame that carries the figure. The tail is
+ * bounded, because a server that never sends a newline must not grow this
+ * without limit.
+ */
+class ReportedCreditScanner {
+  private buffer = ''
+  private total: number | undefined
+
+  constructor(private readonly onCredit: ((credit: number) => void) | undefined) {}
+
+  push(chunk: Buffer): void {
+    if (this.onCredit === undefined) return
+    this.buffer += chunk.toString('utf8')
+    const lines = this.buffer.split('\n')
+    // Everything after the last newline is a possibly-partial line.
+    this.buffer = lines.pop() ?? ''
+    if (this.buffer.length > MAX_PENDING_FRAME) this.buffer = ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) continue
+      const payload = trimmed.slice('data:'.length).trim()
+      if (payload === '' || payload === '[DONE]') continue
+      const credit = readReportedCredit(payload)
+      if (credit === undefined) continue
+      this.total = (this.total ?? 0) + credit
+      this.onCredit(credit)
+    }
+  }
+
+  /** Sum of every figure seen, or `undefined` when the stream reported none. */
+  get reported(): number | undefined {
+    return this.total
+  }
+}
+
+/** Cap on a held-back partial frame, so a newline-less stream cannot grow it. */
+const MAX_PENDING_FRAME = 1_000_000
 
 /** Chat-completion POSTs must carry a JSON body type (simple-request CSRF drops here). */
 function isJsonContentType(req: IncomingMessage): boolean {
   const type = req.headers['content-type']
   return typeof type === 'string' && type.trim().toLowerCase().startsWith('application/json')
+}
+
+/**
+ * The session a chat call belongs to, per the host's own header.
+ *
+ * pi-ai sends the host's session identifier as `x-session-id` on every call once
+ * the endpoint is not OpenRouter — measured on this machine, and identical to
+ * the `session.id` the host's `session/event` stream carries, which is what
+ * makes a figure attributable to the turn that produced it.
+ *
+ * Absent on any client that does not send it, in which case the figure goes
+ * nowhere rather than to a guessed session.
+ */
+function sessionOfRequest(req: IncomingMessage): string | undefined {
+  const header = req.headers['x-session-id']
+  if (typeof header !== 'string') return undefined
+  const session = header.trim()
+  return session === '' ? undefined : session
 }
 
 /** HTTP status each upstream failure class surfaces as. */
@@ -108,6 +210,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim {
   const { store, client, catalog } = options
   const logger = options.logger
+  const onReportedCredit = options.onReportedCredit
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
@@ -246,8 +349,18 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     })
     let sawDone = false
     const body = Readable.fromWeb(result.response.body as Parameters<typeof Readable.fromWeb>[0])
+    // The figures ride inside this stream, so they are read here or not at all;
+    // the session comes from this request's own header, which is what ties the
+    // sum to the turn the host is about to close.
+    const sessionId = onReportedCredit === undefined ? undefined : sessionOfRequest(req)
+    const scanner = new ReportedCreditScanner(
+      sessionId === undefined || onReportedCredit === undefined
+        ? undefined
+        : credit => { onReportedCredit(sessionId, credit) },
+    )
     body.on('data', (chunk: Buffer) => {
       if (chunk.includes('[DONE]')) sawDone = true
+      scanner.push(chunk)
     })
     body.on('error', (error: unknown) => {
       logger?.warn('dsh-workbuddy-connect: upstream stream failed mid-flight', error)

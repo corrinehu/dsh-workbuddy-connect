@@ -1326,6 +1326,19 @@ interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
+  /**
+   * Sink for the per-call credit figures the upstream reports.
+   *
+   * The shim is the only place that sees them: they arrive inside the SSE
+   * stream this module forwards, and nothing downstream parses that stream. The
+   * shim also sees the `x-session-id` header the host puts on each call, which
+   * is what lets a figure be attributed to a session at all — the plugin's own
+   * accounting never learns which call belonged to whom otherwise.
+   *
+   * Optional so the shim stays constructible without a ledger, and so a caller
+   * that has none (the tests) is not forced to fabricate one.
+   */
+  onReportedCredit?: (sessionId: string, credit: number) => void;
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind

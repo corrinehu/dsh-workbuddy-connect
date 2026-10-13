@@ -16,6 +16,7 @@ import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { CreditLedger } from './credit-ledger.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -58,6 +59,14 @@ export interface WorkBuddyStatusRouteOptions {
    * and tests keep their behaviour; the international variant passes its own.
    */
   path?: string
+  /**
+   * Per-turn credit accounting for the composer badge.
+   *
+   * Optional so the status route keeps working on its own in tests and
+   * headless profiles — without it the document simply carries no
+   * `turnSpend`, which is the same shape as a first read.
+   */
+  ledger?: CreditLedger
 }
 
 /** Redact token-like content before it crosses to the browser. */
@@ -88,9 +97,15 @@ function loopbackRequest(req: IncomingMessage): boolean {
  * Assemble the card's status document. Sign-in state is read-only; credit is
  * a live billing answer whose failure degrades to `creditsError` rather than
  * failing the whole document.
+ *
+ * @param deps - the routes' shared dependencies.
+ * @param sessionId - the session the read was made for, when the caller named
+ *   one. It both attributes the drop this read reveals and selects the turn
+ *   list that comes back; see {@link workBuddyWebStatus} callers.
  */
 export async function workBuddyWebStatus(
   deps: WorkBuddyStatusRouteOptions,
+  sessionId?: string,
 ): Promise<WorkBuddyWebStatus> {
   const authStatus = await deps.store.status()
   if (authStatus.state !== 'signed-in') {
@@ -197,10 +212,36 @@ export async function workBuddyWebStatus(
     const credential = await deps.store.current()
     if (credential !== undefined) {
       const credits = await deps.client.fetchCredits(credential)
+      // The per-turn delta is computed from THIS read against the previous one,
+      // so the ledger sees every balance the route answers with — a manual ↻,
+      // a mount fetch, and the trailing read after a probe all count. A reply
+      // priced by whichever read happens to bracket it is the only honest
+      // accounting available for a subscription quota.
+      const spend = deps.ledger?.observe({
+        ...authStatus.nickname === undefined ? {} : { nickname: authStatus.nickname },
+        ...authStatus.domain === undefined ? {} : { domain: authStatus.domain },
+        ...credential.enterpriseId === undefined ? {} : { enterpriseId: credential.enterpriseId },
+        ...credential.uid === undefined ? {} : { uid: credential.uid },
+      }, credits, sessionId)
+      // The turn list is the transcript footer's view: one figure per turn,
+      // newest last, so a finished reply keeps showing its own cost after later
+      // replies have been priced. It is absent — not empty — when the read
+      // named no session, because "you did not ask" and "there is nothing yet"
+      // are different answers and the footer only ever means the latter.
+      const turns = sessionId === undefined || deps.ledger === undefined
+        ? undefined
+        : deps.ledger.turnSpends(sessionId)
       // `unlimited` and `cycleResetTime` ride along as-is: the card must see
       // "no cap" as its own state, and the fetch only sets them when the
-      // upstream actually reported them.
-      return { ...probed, credits }
+      // upstream actually reported them. `turnSpend` is omitted rather than
+      // zeroed when there is no comparable pair, so the badge can tell "no
+      // answer" from "cost nothing".
+      return {
+        ...probed,
+        credits,
+        ...spend === undefined ? {} : { turnSpend: spend },
+        ...turns === undefined ? {} : { turns },
+      }
     }
   } catch (error: unknown) {
     return { ...probed, creditsError: safeMessage(error) }
@@ -222,11 +263,32 @@ export function workBuddyStatusHandler(
       return
     }
     try {
-      json(res, 200, await workBuddyWebStatus(deps))
+      json(res, 200, await workBuddyWebStatus(deps, sessionOf(req)))
     } catch (error: unknown) {
       json(res, 500, { error: safeMessage(error) })
     }
   }
+}
+
+/**
+ * The session a status read was made for, when the caller named one.
+ *
+ * The transcript footer needs its own turn's figure, and turns are numbered
+ * per session, so a read that carries a session id gets that session's list
+ * back. The composer badge asks without one and is served the account-wide
+ * document exactly as before — the parameter is a qualifier, never a
+ * requirement, so an older browser half keeps working unchanged.
+ *
+ * The value is treated as an opaque key: it is only ever used to look a list up
+ * in a Map, never interpolated into a query or a log.
+ */
+function sessionOf(req: IncomingMessage): string | undefined {
+  const url = req.url ?? ''
+  const query = url.indexOf('?')
+  if (query < 0) return undefined
+  const params = new URLSearchParams(url.slice(query + 1))
+  const session = params.get('session')
+  return session === null || session === '' ? undefined : session
 }
 
 /** Mount the GET status route on an optional webServer context. */

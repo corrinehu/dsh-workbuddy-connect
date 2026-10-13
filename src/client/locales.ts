@@ -22,6 +22,32 @@ export const en = {
   creditsTotalUnlimited: 'Total: Unlimited',
   unlimitedQuota: 'Unlimited',
   composerCredit: '{prefix}{total} credits',
+  /**
+   * The per-turn delta (#99). The minus sign is part of the copy, not a
+   * formatted number: it states the direction the balance moved, which is the
+   * whole meaning of the figure. The icon leads so a footer figure is
+   * recognizable at a glance as credits rather than as an unexplained number
+   * next to the token count, and it sits flush against the sign — the two read
+   * as one unit, the way a price tag does.
+   */
+  composerTurnSpend: '⚡−{amount} credits',
+  /**
+   * Tooltip on a transcript footer's figure (#99). Says what the number is and
+   * where its edges are, because the accounting is inherently approximate: the
+   * balance is read around the turn, not during it, so a concurrent billing
+   * change would land here too. Better to state that than to let the figure
+   * imply a precision it does not have.
+   */
+  composerTurnSpendTooltip: 'Credit consumed while this turn ran, measured from the account balance before and after it',
+  /**
+   * Shown when the figure came from the upstream's own `usage.credit`.
+   *
+   * The two sources are indistinguishable on screen but not equivalent, so the
+   * text has to carry the difference: this one is the provider's arithmetic for
+   * this turn alone, and can be stated without the caveat the balance reading
+   * needs.
+   */
+  composerTurnSpendTooltipReported: 'Credit this turn was billed for, as reported by the provider',
   composerCreditRefresh: 'Refresh credit balance',
   packageEnterprise: 'Enterprise quota',
   cycleResetAt: 'Resets {time}',
@@ -154,6 +180,12 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   creditsTotalUnlimited: '合计：不限额',
   unlimitedQuota: '不限额',
   composerCredit: '{prefix}{total}（积分）',
+  /** 本轮消耗（#99）：负号是文案的一部分，表示余额的变动方向。图标打头、紧贴负号，让页脚的数字一眼能认出是积分。 */
+  composerTurnSpend: '⚡−{amount} 积分',
+  /** 悬停提示（#99）：说明这个数字是本轮前后的余额差，不是精确计费。 */
+  composerTurnSpendTooltip: '本轮对话消耗的积分，按对话前后的账户余额差计算',
+  /** 数字来自上游 usage.credit 时的悬停提示，与余额法区分开。 */
+  composerTurnSpendTooltipReported: '本轮实际计费的积分，由服务商直接上报',
   composerCreditRefresh: '刷新积分',
   packageEnterprise: '企业额度',
   cycleResetAt: '重置时间：{time}',
