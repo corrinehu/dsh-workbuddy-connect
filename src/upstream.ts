@@ -7,6 +7,7 @@
  * @module dsh-workbuddy-connect/upstream
  */
 
+import { randomUUID } from 'node:crypto'
 import { appUserAgent, resolveAppVersion, type AppVersionInfo } from './app-version.ts'
 import { chatUserAgent, fallbackChatIdentity, resolveChatIdentity, type ChatIdentity } from './client-identity.ts'
 import type { WorkBuddyCredential } from './auth.ts'
@@ -434,11 +435,40 @@ function commonHeaders(credential: WorkBuddyCredential): Record<string, string> 
 }
 
 /**
+ * The conversation-channel trio the chat endpoints require.
+ *
+ * Since 2026-10-16 `www.workbuddy.ai` answers any `/v2/chat/completions`
+ * request that omits all three `X-Conversation-*` headers with `400` /
+ * `code 11128` / `msg: "conversation id missing"`, whose `displayMsg.zh` is
+ * 「请求被拦截，请重新发送」 (issue #139). The official desktop client sends
+ * the trio on chat and speech alike — read out of `resources/app.asar`, where
+ * the names are `X-Conversation-ID`, `X-Conversation-Request-ID` and
+ * `X-Conversation-Message-ID`.
+ *
+ * A fresh UUID per request is enough, and is what the wire measurement
+ * supports: the upstream keeps no history keyed by the id (two calls sharing
+ * one id, the second carrying only `system` + `user`, still answered "I don't
+ * know"), so the trio marks the channel rather than carrying conversation
+ * state. Fresh ids also keep concurrent sub-agents off one shared
+ * conversation. The CN gateway was measured accepting the same trio (200 with
+ * and without), so both regions carry it and the two paths cannot drift.
+ */
+function conversationHeaders(): Record<string, string> {
+  return {
+    'X-Conversation-ID': randomUUID(),
+    'X-Conversation-Request-ID': randomUUID(),
+    'X-Conversation-Message-ID': randomUUID(),
+  }
+}
+
+/**
  * Chat request headers, including the X-No-* conventions the official CLI uses.
  *
  * `userAgent` and `clientVersion` carry the same resolved desktop identity for
  * chat and probe requests. Refresh shares `commonHeaders` but never this
- * override, so the two paths cannot drift into each other.
+ * override, so the two paths cannot drift into each other. The
+ * `X-Conversation-*` trio rides along too — see {@link conversationHeaders} —
+ * because the international gateway rejects a chat that omits it.
  */
 function chatHeaders(credential: WorkBuddyCredential, userAgent: string, clientVersion: string): Record<string, string> {
   const headers: Record<string, string> = {
@@ -455,6 +485,7 @@ function chatHeaders(credential: WorkBuddyCredential, userAgent: string, clientV
     'X-IDE-Name': 'WorkBuddy',
     'X-IDE-Version': clientVersion,
     'X-Product': 'SaaS',
+    ...conversationHeaders(),
   }
   return headers
 }
