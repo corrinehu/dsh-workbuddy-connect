@@ -35,7 +35,7 @@ import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
-import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
+import { CONNECT_VERSION, versionDriftWarning } from './version-resolve.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 
@@ -410,7 +410,7 @@ function createVariantRuntime(
   // if the pre-adoption state is already hidden.
   catalog.setVisible(false)
   const probeStore = new WorkBuddyProbeStore({
-    pluginVersion: WORKBUDDY_CONNECT_VERSION,
+    pluginVersion: CONNECT_VERSION,
     path: workbuddyProbePath(variant.probeFilename),
   })
   // One file per variant, for the same reason the probe records are split: the
@@ -624,6 +624,12 @@ export function apply(ctx: Context, config: Config): void {
   const piAiWarning = piAiVersionWarning()
   if (piAiWarning !== undefined) ctx.logger.warn(`dsh-workbuddy-connect: ${piAiWarning}`)
 
+  // Report a stale build once, at load. The reported version comes from the
+  // package manifest now, so this only fires when a checkout's package.json
+  // was bumped without rebuilding its lib/ (issue #149).
+  const driftWarning = versionDriftWarning(CONNECT_VERSION)
+  if (driftWarning !== undefined) ctx.logger.warn(`dsh-workbuddy-connect: ${driftWarning}`)
+
   // Live configuration source: starts as the applied config and is replaced by
   // the settings section's source once one is installed, so edits reach the
   // probe consent gate without a restart.
@@ -759,7 +765,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(['webServer'], webCtx => {
     // One update route for the whole bundle: it answers this npm package's
     // public version metadata only, so it is per-plugin, not per-variant.
-    registerWorkBuddyUpdateRoute(webCtx, { currentVersion: WORKBUDDY_CONNECT_VERSION })
+    registerWorkBuddyUpdateRoute(webCtx, { currentVersion: CONNECT_VERSION })
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,

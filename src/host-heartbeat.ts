@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
+import { CONNECT_VERSION } from './version-resolve.ts'
 
 /** Basename of the host heartbeat file inside the Harness home. */
 export const WORKBUDDY_HOST_HEARTBEAT_FILENAME = '.workbuddy-host-heartbeat.json'
@@ -48,7 +48,7 @@ export async function writeHostHeartbeat(): Promise<void> {
   const document: WorkBuddyHostHeartbeat = {
     version: HEARTBEAT_FORMAT_VERSION,
     package: 'dsh-workbuddy-connect',
-    pluginVersion: WORKBUDDY_CONNECT_VERSION,
+    pluginVersion: CONNECT_VERSION,
     registeredAt: Date.now(),
     pid: process.pid,
   }
